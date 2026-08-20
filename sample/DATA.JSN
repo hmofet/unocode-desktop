@@ -1,0 +1,8 @@
+// JSONC: comments and trailing commas are legal here, as they are in every
+// UnoCode (and VS Code) config file.
+{
+    "name": "unocode-desktop-demo",
+    "version": "0.1.0",
+    "targets": ["windows", "macos", "linux"],
+    "native": true,
+}
