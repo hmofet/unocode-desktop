@@ -54,6 +54,15 @@ Ctrl+Shift+P opens the command palette; Ctrl+` the terminal. The volume map:
 `WORK` is the folder being edited, `APP` the read-only bundled resources
 (fonts, sample extensions), `HOME` the per-user data directory.
 
+## Performance
+
+Against VS Code 1.126.0 on the same machine, same folder, both watched from
+outside with neither instrumented: **4.1x faster** to a usable window than a
+clean-profile VS Code, **13x faster** than the VS Code that actually opens on
+this machine, **23x less** memory, **136x smaller** on disk, one process
+against eight. Full method, the traces, and the one dimension where UnoCode
+loses: [BENCHMARK.md](BENCHMARK.md).
+
 ## Status: phase 0
 
 Working: the full workbench (activity bar, explorer, tabbed editors, minimap,
