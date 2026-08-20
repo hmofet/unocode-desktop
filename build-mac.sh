@@ -18,7 +18,34 @@ SDL_VER="${SDL_VER:-2.30.9}"
 SDL_DIR="${SDL_DIR:-$HOME/.cache/unocode-desktop/sdl}"
 FW="$SDL_DIR/SDL2.framework"
 APP=build/mac/UnoCode.app
-SIGN_ID="${SIGN_ID:-Developer ID Application}"
+
+# ---- which identity can this machine actually sign with? -------------------
+# Distribution needs a "Developer ID Application" certificate, which is an
+# Apple Developer Program enrolment, not something a build script can conjure.
+# Rather than failing the build on a machine that only has a development cert,
+# pick the best available and SAY which one, so nobody mistakes a locally
+# signed build for a distributable one.
+uc_sign_identity() {
+    if [ -n "$SIGN_ID" ]; then echo "$SIGN_ID"; return; fi
+    for want in "Developer ID Application" "Apple Distribution" \
+                "3rd Party Mac Developer Application" "Apple Development"; do
+        if security find-identity -v -p codesigning 2>/dev/null | grep -q "$want"; then
+            security find-identity -v -p codesigning | grep "$want" | head -1 \
+                | sed 's/.*"\(.*\)"/\1/'
+            return
+        fi
+    done
+    echo "-"                       # ad-hoc: runs locally, distributes nowhere
+}
+
+uc_sign_note() {
+    case "$1" in
+      "Developer ID"*) echo "note: Developer ID - can be notarized and distributed directly." ;;
+      "Apple Distribution"*|"3rd Party"*) echo "note: store identity - for App Store submission, not direct download." ;;
+      "Apple Development"*) echo "note: DEVELOPMENT identity. Runs on this machine and registered devices. NOT distributable: notarization needs a Developer ID Application certificate (see ROADMAP UCD-32)." ;;
+      "-") echo "note: AD-HOC signature. Local use only." ;;
+    esac
+}
 
 # ---- SDL2.framework (universal, cached) ------------------------------------
 if [ ! -d "$FW" ]; then
@@ -105,9 +132,21 @@ lipo -archs "$APP/Contents/MacOS/UnoCode" | grep -q arm64
 lipo -archs "$APP/Contents/MacOS/UnoCode" | grep -q x86_64
 
 if [ "${1:-}" = "--sign" ]; then
-    codesign --force --deep --options runtime --timestamp \
-             --sign "$SIGN_ID" "$APP"
+    ID=$(uc_sign_identity)
+    echo "signing as: $ID"
+    if [ "$ID" = "-" ]; then
+        codesign --force --deep --sign - "$APP"
+    else
+        # --options runtime (hardened) is only meaningful for notarized
+        # distribution, and only a Developer ID identity can be notarized.
+        case "$ID" in
+            "Developer ID"*) codesign --force --deep --options runtime \
+                                      --timestamp --sign "$ID" "$APP" ;;
+            *)               codesign --force --deep --sign "$ID" "$APP" ;;
+        esac
+    fi
     codesign --verify --strict --verbose=2 "$APP"
+    uc_sign_note "$ID"
 fi
 
 echo "built: $APP"
