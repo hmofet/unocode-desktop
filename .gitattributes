@@ -1,0 +1,16 @@
+# Shell scripts and C sources must reach Linux and macOS with LF endings. A
+# contributor working on Windows with core.autocrlf=true would otherwise commit
+# CRLF, and a CRLF shebang fails as "required file not found", which names
+# neither the file nor the real problem.
+*.sh    text eol=lf
+*.c     text eol=lf
+*.h     text eol=lf
+*.py    text eol=lf
+*.md    text eol=lf
+
+# PowerShell is the Windows side of the harness; leave it CRLF.
+*.ps1   text eol=crlf
+
+*.png   binary
+*.ttf   binary
+*.dmg   binary
