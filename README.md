@@ -1,73 +1,117 @@
 # UnoCode Desktop
 
-The [UnoCode](https://github.com/hmofet/unodos) editor - UnoDOS's VS Code-class
-workbench - running as a native desktop application on Windows, macOS and
-Linux, over SDL2.
+A code editor in the shape of Visual Studio Code, built out of about 23,000
+lines of C, with no browser engine and no JavaScript runtime underneath it.
 
-The editor core (~11k lines of C), the unoui toolkit, the unojs extension host
-and the TrueType text engine come from the pinned `upstream/unodos` submodule
-**unmodified**: the same translation units that boot on a bare-metal PC (and
-the PS2, and a Dreamcast) compile here against a ~900-line host shim. The core
-reaches the outside world only through the ~30 functions it declares in
-`unocode.h` - filesystem, fonts, a clock, five shell hooks - and `host/`
-provides exactly those, on top of SDL2 and the host OS, the way the pc64 shell
-provides them on top of UEFI.
+It starts in a quarter of a second, holds a 60,000-line file in 48 MB, runs as
+one process, and installs as 6.5 MB across 14 files. It reads VS Code's colour
+themes, keybindings, snippets, TextMate grammars and extension manifests as they
+are written, because those file formats are the compatibility surface it was
+designed around.
 
-What that buys, concretely: VS Code's file formats (settings, keybindings,
-themes, TextMate grammars, snippets, extension manifests) in a binary around a
-megabyte that starts in tens of milliseconds and idles around two repaints a
-second.
-
-## Layout
+The editor is not new. It is [UnoCode](https://github.com/hmofet/unodos), the
+workbench from UnoDOS, an operating system that boots on bare-metal PCs and on a
+PlayStation 2 and a Dreamcast. **This repository is the ~900 lines that let the
+same C run on Windows, macOS and Linux.** The core is consumed from a pinned
+submodule, unmodified: the translation units compiled here are byte-for-byte the
+ones that boot on a machine with no operating system under them.
 
 ```
-host/               the shim: SDL2 shell, filesystem seam, shell hooks
-upstream/unodos     pinned submodule - consumed read-only, never patched here
-build.sh            native + mingw cross builds, headless render gate
-sample/             a small demo workspace
+                                   UnoCode Desktop      VS Code
+  time to a usable window                   276 ms      1,126 ms   (3,597 ms as configured)
+  memory, private bytes                      40 MB        896 MB
+  processes                                       1            8
+  on disk                                   6.5 MB        886 MB
 ```
 
-The rule that keeps this repo honest: **nothing under `upstream/` is ever
-edited here.** A change the port needs in the core is an upstream request in
-the unodos repo (per its `AGENTS.md`), not a patch in this one.
+Same machine, same folder, neither application instrumented. Method, traces and
+the dimension where UnoCode *loses* are in [BENCHMARK.md](BENCHMARK.md).
+
+## Status
+
+Phase 0. The workbench is real and complete: activity bar, file explorer, tabbed
+editors with a minimap, find, the command palette, settings, colour themes,
+syntax highlighting, the integrated terminal's builtins, and an extension host
+that runs both declarative and JavaScript extensions.
+
+It is **not yet a daily driver**, and the reasons are specific and written down.
+Filenames longer than 15 characters are withheld from listings rather than
+truncated, so most real projects are partly invisible. There is no clipboard
+integration with the host, no UTF-8 input, no HiDPI awareness, and settings are
+written into the folder you are editing. Each of those is a numbered task in
+[ROADMAP.md](ROADMAP.md), which is the plan for closing the distance to VS Code.
 
 ## Build
 
-```
-git submodule update --init
-./build.sh              # Linux/mac native -> build/unocode
-./build.sh --gate       # + headless render check (no display needed)
-./build.sh --windows    # mingw cross -> build/win/unocode.exe
+```bash
+git clone --recurse-submodules https://github.com/hmofet/unocode-desktop
+cd unocode-desktop
+./build.sh              # Linux / macOS native  -> build/unocode
+./build.sh --gate       # + a headless render check that needs no display
+./build.sh --windows    # mingw cross-build     -> build/win/unocode.exe
+./build-mac.sh          # macOS Universal Binary 2 (arm64 + x86_64)
 ```
 
-Needs `gcc`, `python3`, and SDL2 dev headers (`libsdl2-dev` /
-`brew install sdl2`). The Windows cross build needs `mingw-w64` and an
-extracted SDL2 mingw devel tree (`SDL2_MINGW=...`).
+Requirements: `gcc` or `clang`, `python3`, and SDL2 development headers
+(`libsdl2-dev`, or `brew install sdl2`). The Windows cross-build needs
+`mingw-w64` plus an extracted SDL2 mingw devel tree (`SDL2_MINGW=...`). The
+macOS build fetches the official SDL2 framework itself, because it is the
+universal one and Homebrew's is not.
+
+> **The core submodule is currently a private repository.** Until that changes,
+> a clone from outside the organisation will fetch this shim but not the editor
+> it hosts, and the build will not complete. The host code, the roadmap and the
+> benchmark are all readable regardless.
 
 ## Run
 
-```
+```bash
 build/unocode [folder]
+build/unocode [folder] --open path/to/file.c
 ```
 
-Ctrl+Shift+P opens the command palette; Ctrl+` the terminal. The volume map:
-`WORK` is the folder being edited, `APP` the read-only bundled resources
-(fonts, sample extensions), `HOME` the per-user data directory.
+`Ctrl+Shift+P` opens the command palette, `Ctrl+P` jumps to a file, `` Ctrl+` ``
+opens the terminal, `Ctrl+,` opens settings. Type `help` in the terminal for what
+it can do.
 
-## Performance
+## How it works
 
-Against VS Code 1.126.0 on the same machine, same folder, both watched from
-outside with neither instrumented: **4.1x faster** to a usable window than a
-clean-profile VS Code, **13x faster** than the VS Code that actually opens on
-this machine, **23x less** memory, **136x smaller** on disk, one process
-against eight. Full method, the traces, and the one dimension where UnoCode
-loses: [BENCHMARK.md](BENCHMARK.md).
+The editor core reaches the outside world through roughly thirty functions it
+declares in `unocode.h`: a filesystem, a font, a clock, and five hooks into
+whatever shell is hosting it. On UnoDOS those are provided by the operating
+system. Here they are provided by `host/`, on top of SDL2 and whatever OS you
+are on. That is the whole port.
 
-## Status: phase 0
+```
+host/main.c        SDL2 window, the two input roads, the frame loop
+host/host_fs.c     the filesystem seam, speaking FAT's dialect over a real OS
+host/host_shell.c  the five shell hooks and the clock
+host/compat/       headers that shadow upstream where a hosted build must differ
+upstream/unodos    the pinned submodule: consumed, never patched
+```
 
-Working: the full workbench (activity bar, explorer, tabbed editors, minimap,
-find, command palette, settings, themes, syntax highlighting, the integrated
-terminal's builtins, declarative + JS extensions). Deliberately not yet:
-long filenames beyond 15 characters (withheld from listings, not truncated),
-file deletion, process spawning from the terminal, UTF-8 input, clipboard
-integration with the host.
+Two decisions carry most of the design. The editor runs in unoui's **fullscreen
+canvas** mode, so there is no simulated desktop inside the window and the OS
+provides the title bar: structurally it is a native application, not an emulator
+showing one. And the filesystem shim resolves paths **case-insensitively**,
+because the core upper-cases everything the way FAT does, and ext4 does not.
+
+The rule that keeps the port honest is that **nothing under `upstream/` is ever
+edited here**. When the port needs something from the core, that is a request
+filed against the UnoDOS repository under its own process, and those tasks are
+marked `[UPSTREAM]` in the roadmap. It is why the same source still boots on a
+Dreamcast.
+
+## Contributing, or picking this up
+
+[ROADMAP.md](ROADMAP.md) is the work queue: 43 tasks, each scoped to a single
+session, each with acceptance criteria, ordered by what a day-to-day user hits
+first rather than by what is interesting to build. Take the lowest unclaimed ID
+in the highest unfinished tier, claim it by editing that file, and make sure
+`./build.sh --gate` is still green when you are done.
+
+## Licence
+
+Mozilla Public License 2.0, the same licence as the UnoDOS core it is built
+from. See [LICENSE](LICENSE), and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
+for SDL2, stb_truetype and the four bundled typefaces.

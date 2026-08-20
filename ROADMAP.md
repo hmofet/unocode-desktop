@@ -7,6 +7,34 @@ today; a task near the bottom is one they would miss in their second month.
 Each task is sized to **one agent session**. If a task turns out to need more,
 split it and say so here rather than growing it.
 
+## Where things stand (2026-08-20)
+
+Phase 0 is finished and nothing here has been started yet. What exists:
+
+- The unmodified core builds and runs on **Windows, Linux and macOS** (the mac
+  build is a Universal Binary 2; both slices render byte-identical frames).
+- `./build.sh --gate` renders the workbench headlessly and asserts it painted.
+  That is the check every task below must leave green.
+- The editor is [benchmarked](BENCHMARK.md) against VS Code and wins on startup,
+  memory, process count and disk by large multiples.
+
+**Start with UCD-01.** Long filenames are the one defect that makes the editor
+unusable on a real project rather than merely incomplete: files whose names
+exceed 15 characters are withheld from listings entirely, so most repositories
+appear half-empty. Everything else in Tier 0 is a normal missing feature; that
+one is a wall.
+
+Two known issues that are deliberately **not** yet tasks, recorded so nobody
+rediscovers them as bugs:
+
+- **Idle CPU is ~1.2%** because the SDL event loop wakes every 15 ms whether or
+  not anything happened. Deferred on purpose: the right time to tune the frame
+  loop is after the feature set stops changing, since what the loop has to do
+  per frame is exactly what is being changed by the work below.
+- **A Developer ID certificate is missing.** The mac build signs with an Apple
+  Development identity, which cannot be notarized or distributed. Obtaining one
+  is an Apple Developer Program enrolment, not a code change (see UCD-32).
+
 ## How to use this list
 
 - **Take the lowest unclaimed ID in the highest unfinished tier.** Tiers are
