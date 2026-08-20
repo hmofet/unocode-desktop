@@ -1,0 +1,113 @@
+#!/bin/sh
+# UnoCode Desktop, macOS. Produces a UNIVERSAL BINARY 2 (arm64 + x86_64) and
+# wraps it in a .app bundle.
+#
+#   ./build-mac.sh              -> build/mac/UnoCode.app  (unsigned)
+#   ./build-mac.sh --sign       -> the same, code-signed (needs a GUI-session
+#                                  login keychain: run it through mba's build
+#                                  daemon, not a bare ssh - see CLAUDE.md)
+#
+# SDL2 comes from the OFFICIAL macOS framework, which upstream ships as a fat
+# binary containing both slices. Homebrew's SDL2 is single-architecture and
+# therefore cannot produce a UB2 - do not substitute it.
+set -e
+cd "$(dirname "$0")"
+
+U=upstream/unodos
+SDL_VER="${SDL_VER:-2.30.9}"
+SDL_DIR="${SDL_DIR:-$HOME/.cache/unocode-desktop/sdl}"
+FW="$SDL_DIR/SDL2.framework"
+APP=build/mac/UnoCode.app
+SIGN_ID="${SIGN_ID:-Developer ID Application}"
+
+# ---- SDL2.framework (universal, cached) ------------------------------------
+if [ ! -d "$FW" ]; then
+    mkdir -p "$SDL_DIR"
+    echo "fetching SDL2 $SDL_VER framework..."
+    curl -sSL -o "$SDL_DIR/sdl.dmg" \
+        "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_VER/SDL2-$SDL_VER.dmg"
+    MP=$(hdiutil attach -nobrowse -readonly "$SDL_DIR/sdl.dmg" | awk '/\/Volumes\//{print $NF; exit}')
+    cp -R "$MP/SDL2.framework" "$SDL_DIR/"
+    hdiutil detach -quiet "$MP"
+fi
+# refuse to build a "universal" binary against a thin dependency
+if ! lipo -archs "$FW/Versions/A/SDL2" | grep -q arm64 || \
+   ! lipo -archs "$FW/Versions/A/SDL2" | grep -q x86_64; then
+    echo "SDL2.framework is not universal: $(lipo -archs "$FW/Versions/A/SDL2")" >&2
+    exit 1
+fi
+
+# ---- sources (identical list to build.sh) ----------------------------------
+UC=$(ls $U/pc64/unocode/uc_*.c)
+UNOUI="$U/unoui/unoui.c $U/unoui/unoui_input.c $U/unoui/unoui_anim.c \
+       $U/unoui/unoui_wmanim.c $U/unoui/themes/theme_unodos.c"
+UNOJS=$(ls $U/unojs/ujs_*.c)
+FB="$U/pc64/fb.c $U/pc64/pc64_font.c"
+HOST="host/main.c host/host_fs.c host/host_shell.c"
+INC="-I$U/pc64 -I$U/pc64/unocode -I$U/unoui -I$U/unojs -Ihost"
+DEFS="-DUNO_PC64"
+WARN="-Wall -Wno-unused-parameter -Werror=implicit-function-declaration \
+      -Werror=incompatible-pointer-types"
+
+if [ ! -f "$U/pc64/build/font_data.h" ]; then
+    ( cd "$U/ps2" && python3 mkfont_c.py )
+    mkdir -p "$U/pc64/build"
+    cp "$U/ps2/build/font_data.h" "$U/pc64/build/font_data.h"
+fi
+
+# ---- the bundle ------------------------------------------------------------
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
+
+# One clang invocation, two -arch flags: clang builds both slices and lipos them
+# together itself, which is what makes this a Universal Binary 2 rather than two
+# binaries in a trench coat.
+# shellcheck disable=SC2086
+clang -O2 -g -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
+      $WARN $DEFS $INC -F"$SDL_DIR" -I"$FW/Headers" \
+      $HOST $UC $UNOUI $UNOJS $FB \
+      -o "$APP/Contents/MacOS/UnoCode" \
+      -F"$SDL_DIR" -framework SDL2 \
+      -Wl,-rpath,@executable_path/../Frameworks -lm
+
+cp -R "$FW" "$APP/Contents/Frameworks/"
+
+# resources: the four TTFs under the names pc64_font looks for, + sample exts
+R="$APP/Contents/Resources/res"
+mkdir -p "$R"
+cp "$U/pc64/fonts/Sans.ttf"       "$R/SANS.TTF"
+cp "$U/pc64/fonts/Mono.ttf"       "$R/MONO.TTF"
+cp "$U/pc64/fonts/Ubuntu.ttf"     "$R/UBUNTU.TTF"
+cp "$U/pc64/fonts/ChiKareGo2.ttf" "$R/CHICAGO.TTF"
+rm -rf "$R/EXT" && mkdir -p "$R/EXT"
+cp -r "$U/pc64/unocode/ext/." "$R/EXT/"
+
+cat > "$APP/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key>              <string>UnoCode</string>
+  <key>CFBundleDisplayName</key>       <string>UnoCode</string>
+  <key>CFBundleIdentifier</key>        <string>com.arinbakht.unocode</string>
+  <key>CFBundleVersion</key>           <string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundlePackageType</key>       <string>APPL</string>
+  <key>CFBundleExecutable</key>        <string>UnoCode</string>
+  <key>LSMinimumSystemVersion</key>    <string>11.0</string>
+  <key>NSHighResolutionCapable</key>   <true/>
+</dict></plist>
+PLIST
+
+# ---- verify ----------------------------------------------------------------
+echo "archs: $(lipo -archs "$APP/Contents/MacOS/UnoCode")"
+lipo -archs "$APP/Contents/MacOS/UnoCode" | grep -q arm64
+lipo -archs "$APP/Contents/MacOS/UnoCode" | grep -q x86_64
+
+if [ "${1:-}" = "--sign" ]; then
+    codesign --force --deep --options runtime --timestamp \
+             --sign "$SIGN_ID" "$APP"
+    codesign --verify --strict --verbose=2 "$APP"
+fi
+
+echo "built: $APP"
