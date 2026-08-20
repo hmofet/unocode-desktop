@@ -58,11 +58,6 @@ Requirements: `gcc` or `clang`, `python3`, and SDL2 development headers
 macOS build fetches the official SDL2 framework itself, because it is the
 universal one and Homebrew's is not.
 
-> **The core submodule is currently a private repository.** Until that changes,
-> a clone from outside the organisation will fetch this shim but not the editor
-> it hosts, and the build will not complete. The host code, the roadmap and the
-> benchmark are all readable regardless.
-
 ## Run
 
 ```bash
@@ -89,6 +84,11 @@ host/host_shell.c  the five shell hooks and the clock
 host/compat/       headers that shadow upstream where a hosted build must differ
 upstream/unodos    the pinned submodule: consumed, never patched
 ```
+
+The submodule is [hmofet/unodos](https://github.com/hmofet/unodos), also MPL-2.0,
+pinned to an exact commit so a clone builds the core this host was tested
+against rather than whatever happens to be on its main branch today. Moving to a
+newer core is a deliberate act: bump the submodule, re-run the gate, commit.
 
 Two decisions carry most of the design. The editor runs in unoui's **fullscreen
 canvas** mode, so there is no simulated desktop inside the window and the OS
