@@ -422,6 +422,21 @@ underneath it.
 Opening a folder that can run tasks and language servers is an execution
 decision. VS Code learned this the hard way; we should not have to.
 
+### UCD-43: `[UPSTREAM]` spell the app-descriptor section per target
+**Status:** open · **Size:** S
+
+`UNO_APP_DESC` hardcodes `section(".unodesc")`, which Mach-O rejects outright
+(Apple's assembler wants `__SEGMENT,__section`), so macOS could not compile
+`uc_main.c` at all. The desktop works around it with `host/compat/uno_appdesc.h`,
+which shadows the macro to nothing.
+
+Spell the section per target inside `uno_appdesc.h` so the freestanding builds
+keep their descriptor block and hosted builds need no shim, then delete
+`host/compat/uno_appdesc.h` here.
+
+- **Done when:** the shim is gone, macOS still builds, and pc64's loader still
+  finds descriptors in a `.UNO`.
+
 ---
 
 ## Explicitly out of scope
