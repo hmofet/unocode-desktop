@@ -20,6 +20,7 @@
  * twice a second and an active one at the display's pace.
  *
  *   unocode [folder]           edit a folder (default: the current directory)
+ *   unocode --open <file>      also open that file in an editor tab
  *   unocode --shot <out.ppm>   headless: render the workbench, write a PPM,
  *                              exit - the CI eye that needs no display
  * ======================================================================== */
@@ -48,6 +49,9 @@ static const UnoUuiApp *APP;
  * pc64 this symbol is found through the module header, not a prototype) */
 extern const UnoUuiApp *uno_app_main(void *reserved);
 extern const struct unoui_theme *pc64_shell_theme(void);   /* host_shell.c */
+extern int uc_doc_open(int vol, const char *dir, const char *name);
+
+static const char *g_open_file;    /* --open, resolved after the app is up */
 
 unsigned long host_ms(void) { return (unsigned long)SDL_GetTicks64(); }
 
@@ -219,6 +223,23 @@ static void boot_app(void)
     unoui_ui_add(&UI, &WIN);
     unoui_fullscreen(&UI, &WIN);
     if (APP->opened) APP->opened();
+
+    /* --open: a path relative to the workspace volume. Split off the directory
+     * the way the core's own openers do, since uc_doc_open takes them apart. */
+    if (g_open_file) {
+        char dir[512];
+        const char *name = g_open_file, *p;
+        size_t dn;
+        for (p = g_open_file; *p; p++)
+            if (*p == '/' || *p == '\\') name = p + 1;
+        dn = (size_t)(name - g_open_file);
+        if (dn >= sizeof dir) dn = sizeof dir - 1;
+        memcpy(dir, g_open_file, dn);
+        while (dn && (dir[dn - 1] == '/' || dir[dn - 1] == '\\')) dn--;
+        dir[dn] = 0;
+        uc_doc_open(0, dir, name);
+        host_mark_dirty();
+    }
 }
 
 /* headless: boot, run a few frames, snapshot, exit.  The whole editor core
@@ -249,6 +270,7 @@ int main(int argc, char **argv)
 
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 1 < argc) shot = argv[++i];
+        else if (!strcmp(argv[i], "--open") && i + 1 < argc) g_open_file = argv[++i];
         else workdir = argv[i];
     }
 
