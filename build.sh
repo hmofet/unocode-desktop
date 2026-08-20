@@ -27,7 +27,7 @@ UNOJS=$(ls $U/unojs/ujs_*.c)
 FB="$U/pc64/fb.c $U/pc64/pc64_font.c"
 HOST="host/main.c host/host_fs.c host/host_shell.c"
 
-INC="-I$U/pc64 -I$U/pc64/unocode -I$U/unoui -I$U/unojs -Ihost"
+INC="-Ihost/compat -I$U/pc64 -I$U/pc64/unocode -I$U/unoui -I$U/unojs -Ihost"
 DEFS="-DUNO_PC64"
 WARN="-Wall -Wno-unused-parameter -Werror=implicit-function-declaration \
       -Werror=incompatible-pointer-types"
