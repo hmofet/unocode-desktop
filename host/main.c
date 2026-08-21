@@ -166,6 +166,10 @@ static void on_key_down(const SDL_KeyboardEvent *ke)
     /* Ctrl chords ride the chord road; printable keys shift-spell themselves */
     if ((mods & UI_MOD_CTRL) && sym >= 32 && sym < 127) {
         int uni = (mods & UI_MOD_SHIFT) ? us_shift((int)sym) : (int)sym;
+        /* belt and braces for the one chord where a stale clipboard is
+         * visible: SDL_CLIPBOARDUPDATE and focus-gained have both already had
+         * their chance, and this pull is a no-op when neither was missed */
+        if (sym == SDLK_v) host_clip_pull();
         APP->key(uni, 0, 1);
         return;
     }
@@ -296,13 +300,15 @@ int main(int argc, char **argv)
                             SDL_TEXTUREACCESS_STREAMING, uno_fb_w, uno_fb_h);
 
     boot_app();
+    host_clip_init();
     SDL_StartTextInput();
 
     while (running) {
         SDL_Event ev;
         unoui_event e;
 
-        if (SDL_WaitEventTimeout(&ev, 15)) do {
+        if (SDL_WaitEventTimeout(&ev, 15)) {
+          do {
             switch (ev.type) {
             case SDL_QUIT:
                 running = 0;
@@ -327,7 +333,15 @@ int main(int argc, char **argv)
                     }
                 } else if (ev.window.event == SDL_WINDOWEVENT_EXPOSED) {
                     host_mark_dirty();
+                } else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
+                    /* to copy in another application you had to focus it, so
+                     * coming back is the trigger that cannot be missed even
+                     * where SDL_CLIPBOARDUPDATE is unreliable */
+                    host_clip_pull();
                 }
+                break;
+            case SDL_CLIPBOARDUPDATE:
+                host_clip_pull();
                 break;
             case SDL_MOUSEMOTION:
                 memset(&e, 0, sizeof e);
@@ -364,7 +378,11 @@ int main(int argc, char **argv)
                 on_text(ev.text.text);
                 break;
             }
-        } while (SDL_PollEvent(&ev));
+          } while (SDL_PollEvent(&ev));
+          /* a copy or cut in this batch - by key, palette, menu or extension -
+           * reaches the OS clipboard here, on the one road all of them share */
+          host_clip_push();
+        }
 
         APP->frame();
         UI.ticks++;

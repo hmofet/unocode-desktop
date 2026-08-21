@@ -22,6 +22,16 @@
  * behaves like the FAT the core was written against. */
 int  host_fs_add_volume(const char *name, const char *root, int writable);
 
+/* ---- clipboard (host_clip.c) ----------------------------------------------
+ * The core's clipboard and the OS's are SYNCHRONISED, not intercepted: copy,
+ * cut and paste are reachable from the palette, the menus and an extension as
+ * well as from Ctrl+C/X/V, and only a synchronising mirror serves all of them.
+ * pull is cheap when nothing changed, so calling it on every plausible trigger
+ * costs nothing. */
+void host_clip_init(void);         /* seed both sides; adopt a pre-launch copy */
+void host_clip_pull(void);         /* OS   -> core (clipboard/focus events)    */
+void host_clip_push(void);         /* core -> OS   (after an event batch)      */
+
 /* ---- frame/dirty (host_shell.c) ------------------------------------------ */
 int  host_take_dirty(void);        /* 1 if a repaint was requested since last */
 void host_mark_dirty(void);

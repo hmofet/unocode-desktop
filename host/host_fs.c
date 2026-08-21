@@ -86,16 +86,14 @@ static int match_component(const char *dir, const char *want, char *out, int cap
     if (snprintf(probe, sizeof probe, "%s/%s", dir, want) >= (int)sizeof probe)
         return 0;
     if (stat(probe, &st) == 0) {
-        strncpy(out, want, cap - 1);
-        out[cap - 1] = 0;
+        snprintf(out, (size_t)cap, "%s", want);
         return 1;
     }
     d = opendir(dir);
     if (!d) return 0;
     while ((e = readdir(d)) != 0) {
         if (ieq(e->d_name, want)) {
-            strncpy(out, e->d_name, cap - 1);
-            out[cap - 1] = 0;
+            snprintf(out, (size_t)cap, "%s", e->d_name);
             closedir(d);
             return 1;
         }
@@ -374,8 +372,7 @@ static int resolve(int vol, const char *path, char *out, int create_leaf)
             const char *rest = p;
             while (*rest == '\\' || *rest == '/') rest++;
             if (!create_leaf || *rest) return 0;   /* a missing PARENT fails */
-            strncpy(found, want, sizeof found - 1);
-            found[sizeof found - 1] = 0;
+            snprintf(found, sizeof found, "%s", want);
         }
         if (strlen(out) + 1 + strlen(found) + 1 > MAXPATH) return 0;
         strcat(out, "/");

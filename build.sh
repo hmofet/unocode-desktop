@@ -25,7 +25,7 @@ UNOUI="$U/unoui/unoui.c $U/unoui/unoui_input.c $U/unoui/unoui_anim.c \
        $U/unoui/unoui_wmanim.c $U/unoui/themes/theme_unodos.c"
 UNOJS=$(ls $U/unojs/ujs_*.c)
 FB="$U/pc64/fb.c $U/pc64/pc64_font.c"
-HOST="host/main.c host/host_fs.c host/host_shell.c"
+HOST="host/main.c host/host_fs.c host/host_shell.c host/host_clip.c"
 
 INC="-Ihost/compat -I$U/pc64 -I$U/pc64/unocode -I$U/unoui -I$U/unojs -Ihost"
 DEFS="-DUNO_PC64"
@@ -117,9 +117,27 @@ fs_test() {
     ./build/fs_test build/fs_test_ws
 }
 
+# host_clip.c against a REAL clipboard.  SDL's clipboard is a video-subsystem
+# service, so this one needs a display; on a headless box Xvfb is one, and
+# without either the test says so and is skipped rather than passing silently.
+clip_test() {
+    mkdir -p build
+    # shellcheck disable=SC2086
+    $CC -O1 -g $WARN $INC $(sdl2-config --cflags) \
+        tools/clip_test.c host/host_clip.c \
+        -o build/clip_test $(sdl2-config --libs)
+    if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+        ./build/clip_test
+    elif command -v xvfb-run >/dev/null 2>&1; then
+        xvfb-run -a ./build/clip_test
+    else
+        echo "clip_test: SKIPPED - no display and no xvfb-run" >&2
+    fi
+}
+
 case "${1:-}" in
     --windows) build_windows ;;
-    --test)    fs_test ;;
-    --gate)    build_native; fs_test; gate ;;
+    --test)    fs_test; clip_test ;;
+    --gate)    build_native; fs_test; clip_test; gate ;;
     *)         build_native ;;
 esac
