@@ -84,10 +84,22 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 # One clang invocation, two -arch flags: clang builds both slices and lipos them
 # together itself, which is what makes this a Universal Binary 2 rather than two
 # binaries in a trench coat.
+#
+# That is also why BearSSL is compiled here as SOURCE rather than linked from
+# the cached archive build.sh keeps: an archive holds one architecture, and
+# this command is producing two at once.  The build METHOD differs from
+# build.sh; the source LIST does not, because both take $BSSL from sources.sh.
+# That is the split sources.sh exists to enforce - the lists must not diverge,
+# how each script consumes them may.
+#
+# $WARN is deliberately not applied to $BSSL either, and cannot be here: it is
+# one invocation, so BearSSL rides on our warning flags.  It is warning-clean
+# at -Wall on both slices today; if that ever stops being true, split this the
+# way build.sh does rather than weakening $WARN for our own code.
 # shellcheck disable=SC2086
 clang -O2 -g -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
       $WARN $DEFS $INC -F"$SDL_DIR" -I"$FW/Headers" \
-      $HOST $UC $UNOUI $UNOJS $FB \
+      $HOST $UC $UNOUI $UNOJS $FB $TLS $BSSL \
       -o "$APP/Contents/MacOS/UnoCode" \
       -F"$SDL_DIR" -framework SDL2 \
       -framework AppKit -framework Foundation -lobjc \

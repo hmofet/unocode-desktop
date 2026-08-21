@@ -47,13 +47,38 @@ stage_res() {
     cp -r core/ext/. "$out/EXT/"
 }
 
+# ---- BearSSL, compiled once and kept -----------------------------------------
+# 286 files of third-party C that never change between our builds.  Putting
+# them on the main compile line would add roughly a minute to EVERY build, so
+# they become an archive that is rebuilt only when it is missing.  Delete
+# build/bearssl*.a to force one.
+#
+# Compiled WITHOUT $WARN: it is upstream's code, not ours, and turning our
+# warnings-as-errors on somebody else's library only teaches us to ignore
+# them.  pc64 makes the same call for the same files.
+bearssl_archive() {
+    _out="$1"; _cc="$2"; _ar="$3"
+    [ -f "$_out" ] && return 0
+    echo "compiling BearSSL (once; delete $_out to redo)..."
+    _od="${_out%.a}.objs"
+    rm -rf "$_od" && mkdir -p "$_od"
+    # shellcheck disable=SC2086
+    for _c in $BSSL; do
+        $_cc -O2 -I"$U/pc64/bearssl/inc" -I"$U/pc64/bearssl/src" \
+             -c -o "$_od/$(basename "$_c" .c).o" "$_c"
+    done
+    $_ar rcs "$_out" "$_od"/*.o
+    rm -rf "$_od"
+}
+
 # ---- native ----------------------------------------------------------------
 build_native() {
     mkdir -p build
     # shellcheck disable=SC2086
+    bearssl_archive build/bearssl.a "$CC" "${AR:-ar}"
     $CC -O2 -g $WARN $DEFS $INC $(sdl2-config --cflags) \
-        $HOST $UC $UNOUI $UNOJS $FB \
-        -o build/unocode $(sdl2-config --libs) -lm
+        $HOST $UC $UNOUI $UNOJS $FB $TLS \
+        -o build/unocode $(sdl2-config --libs) build/bearssl.a -lm
     stage_res build/res
     echo "built: build/unocode"
 }
@@ -64,11 +89,14 @@ build_windows() {
     T="$SDL2_MINGW/x86_64-w64-mingw32"
     mkdir -p build/win
     # shellcheck disable=SC2086
+    bearssl_archive build/bearssl-win.a x86_64-w64-mingw32-gcc \
+        x86_64-w64-mingw32-ar
     x86_64-w64-mingw32-gcc -O2 -g $WARN $DEFS $INC \
         -I"$T/include/SDL2" -Dmain=SDL_main \
-        $HOST $UC $UNOUI $UNOJS $FB \
-        -o build/win/unocode.exe \
-        -L"$T/lib" -lmingw32 -lSDL2main -lSDL2 -mwindows -lm -lole32 -luuid
+        $HOST $UC $UNOUI $UNOJS $FB $TLS \
+        -o build/win/unocode.exe build/bearssl-win.a \
+        -L"$T/lib" -lmingw32 -lSDL2main -lSDL2 -mwindows -lm -lole32 -luuid \
+        -lws2_32 -lbcrypt
     cp "$T/../x86_64-w64-mingw32/bin/SDL2.dll" build/win/ 2>/dev/null || \
         cp "$T/bin/SDL2.dll" build/win/
     stage_res build/win/res
@@ -147,6 +175,13 @@ core_test() {
     sh core/tools/test.sh
 }
 
+# host_net.c's contract (UCD-45), including the check that only a real server
+# can make: that an untrusted certificate is REFUSED.  It needs openssl and
+# python3 to stand one up, and skips rather than fails without them.
+net_test() {
+    sh tools/net_test.sh
+}
+
 # The UTF-8 decoder every text road now depends on (UCD-03).
 utf8_test() {
     mkdir -p build
@@ -199,6 +234,6 @@ case "${1:-}" in
     --windows) build_windows ;;
     --test)    core_test; utf8_test; fs_test; clip_test; dialog_test ;;
     --gate)    core_test; build_native; utf8_test; fs_test; clip_test
-               dialog_test; gate; utf8_gate ;;
+               dialog_test; net_test; gate; utf8_gate ;;
     *)         build_native ;;
 esac

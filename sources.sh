@@ -30,9 +30,34 @@ FB="$U/pc64/fb.c $U/pc64/pc64_font.c"
 # disagree, which is exactly the bug this file exists to prevent.
 HOST="host/main.c host/host_fs.c host/host_shell.c host/host_clip.c \
       host/host_win.c host/host_dialog.c host/host_pick_win.c \
-      host/host_pick_unix.c"
+      host/host_pick_unix.c host/host_net.c"
 
-INC="-Ihost/compat -I$U/pc64 -Icore -I$U/unoui -I$U/unojs -Ihost"
+# TLS.  BearSSL comes out of the submodule and so does the trust store, which
+# is the point: tls_ca.c is generated, self-contained and includes only
+# bearssl.h, so the fourteen roots this validates against are the SAME fourteen
+# the device validates against.  A certificate that works there works here.
+#
+# The eight excluded files are the ones pc64 excludes, and the list must stay
+# identical.  Seven pull CPU intrinsics.  The eighth, sysrng.c, would be the
+# obvious one to keep on a hosted build - and it is dead here anyway, because
+# upstream's bearssl/src/config.h forces BR_USE_URANDOM and BR_USE_WIN32_RAND
+# to 0.  host_net.c supplies br_prng_seeder_system() and injects OS entropy
+# itself, exactly as pc64's tls.c does.  Turning those flags on instead would
+# mean patching a shared upstream file so that a hosted build gets different
+# crypto configuration from the device, which is how two builds stop being the
+# same TLS.
+BSSL_SKIP="ghash_pclmul sysrng aes_x86ni aes_x86ni_cbcdec aes_x86ni_cbcenc \
+           aes_x86ni_ctr aes_x86ni_ctrcbc chacha20_sse2"
+BSSL=""
+for _c in $(find "$U/pc64/bearssl/src" -name '*.c' | sort); do
+    _b=$(basename "$_c" .c)
+    case " $BSSL_SKIP " in *" $_b "*) continue;; esac
+    BSSL="$BSSL $_c"
+done
+TLS="$U/pc64/tls_ca.c"
+
+INC="-Ihost/compat -I$U/pc64 -Icore -I$U/unoui -I$U/unojs -Ihost \
+     -I$U/pc64/bearssl/inc -I$U/pc64/bearssl/src"
 DEFS="-DUNO_PC64"
 WARN="-Wall -Wno-unused-parameter -Werror=implicit-function-declaration \
       -Werror=incompatible-pointer-types"
