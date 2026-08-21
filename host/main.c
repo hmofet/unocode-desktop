@@ -514,6 +514,10 @@ int main(int argc, char **argv)
                            (G.maximized ? SDL_WINDOW_MAXIMIZED : 0));
     if (!win) { fprintf(stderr, "SDL window: %s\n", SDL_GetError()); return 1; }
     SDL_SetWindowMinimumSize(win, 700, 460);            /* the app's own min */
+    /* Drop events are NOT on by default in SDL2 - asking for them is what
+     * makes UCD-19 arrive at all, and the absence looks exactly like a
+     * window manager that refuses drops. */
+    SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
     SDL_SetWindowMaximumSize(win, FB_MAX_W, FB_MAX_H);  /* fb ceiling        */
 
     ren = SDL_CreateRenderer(win, -1, 0);
@@ -543,6 +547,16 @@ int main(int argc, char **argv)
             switch (ev.type) {
             case SDL_QUIT:
                 running = confirm_close(win) ? 0 : 1;
+                break;
+            case SDL_DROPFILE:
+                /* SDL hands us a string it allocated; freeing it is ours to do
+                 * (UCD-19).  One event per file, so a multi-file drop arrives
+                 * as several of these and each opens its own tab. */
+                if (ev.drop.file) {
+                    host_adopt_path(ev.drop.file);
+                    SDL_free(ev.drop.file);
+                    host_mark_dirty();
+                }
                 break;
             case SDL_WINDOWEVENT:
                 if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||

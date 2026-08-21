@@ -29,7 +29,7 @@
 int  host_fs_add_volume(const char *name, const char *root, int writable);
 int  host_fs_set_volume_root(int vol, const char *root);
 int  host_fs_abspath(const char *in, char *out, int cap);
-int  uno_fs_list_dir(int vol, const char *dir, char (*names)[16], int maxn);
+int  uno_fs_list_dir(int vol, const char *dir, char *names, int stride, int maxn);
 long uno_fs_read(int vol, const char *name, unsigned char *buf, long max);
 void host_dialog_set_root(const char *root);
 const char *host_dialog_root(void);
@@ -40,6 +40,7 @@ int  host_recent_count(void);
 const char *host_recent_at(int i);
 int  pc64_shell_pick(int want_folder, int *vol, char *dir, int dcap,
                      char *name, int ncap);
+int  host_adopt_path(const char *abs);
 
 /* ---- the stubs the real dialog would provide ------------------------------ */
 static char g_next[1024];          /* what the "picker" will return next */
@@ -59,6 +60,20 @@ void uc_open_folder(int vol, const char *dir)
 {
     (void)vol; (void)dir;
     g_reroot_calls++;
+}
+
+/* the core's document opener, recorded rather than performed - host_adopt_path
+ * (UCD-19) calls it, and what this test proves is which (dir, name) a dropped
+ * path resolves to, not that a buffer got loaded */
+static char g_opened_dir[512], g_opened_name[256];
+static int  g_open_calls;
+int uc_doc_open(int vol, const char *dir, const char *name)
+{
+    (void)vol;
+    snprintf(g_opened_dir, sizeof g_opened_dir, "%s", dir ? dir : "");
+    snprintf(g_opened_name, sizeof g_opened_name, "%s", name ? name : "");
+    g_open_calls++;
+    return 0;
 }
 
 /* ---- harness --------------------------------------------------------------- */
@@ -91,8 +106,8 @@ static void mkd(const char *rel)
 
 static int listed(const char *dir, const char *want)
 {
-    char names[64][16];
-    int n = uno_fs_list_dir(0, dir, names, 64), i;
+    char names[64][256];
+    int n = uno_fs_list_dir(0, dir, names[0], 256, 64), i;
     for (i = 0; i < n; i++) if (!strcmp(names[i], want)) return 1;
     return 0;
 }
@@ -203,6 +218,60 @@ int main(int argc, char **argv)
         host_recent_load();
         ok(host_recent_count() >= 2, "the list survives a reload");
         ok(!strcmp(host_recent_at(0), a), "in the same order");
+    }
+
+    /* ---- dropped paths (UCD-19) --------------------------------------------
+     * The drop handler is host_adopt_path(); SDL only hands it a string.  So
+     * the whole of what a drop DOES is testable here, without a window - and
+     * what matters is that it lands where the picker would. */
+    printf("6. a dropped FILE inside the workspace opens in place\n");
+    {
+        int before;
+        /* State the root rather than inheriting whatever the last test left -
+         * the first draft of this assumed `beta` and test 5 had already moved
+         * on, so it asserted "did not move" about a workspace that had every
+         * reason to. */
+        snprintf(abs, sizeof abs, "%s/beta", WS);
+        host_fs_set_volume_root(0, abs);
+        host_dialog_set_root(abs);
+        before = g_reroot_calls;
+        snprintf(abs, sizeof abs, "%s/beta/OTHER.PY", WS);
+        g_open_calls = 0;
+        ok(host_adopt_path(abs) == 1, "the drop is accepted");
+        ok(g_open_calls == 1, "exactly one document was opened");
+        ok(!strcmp(g_opened_name, "OTHER.PY"), "under its own name");
+        ok(!strcmp(g_opened_dir, ""), "at the volume root");
+        ok(g_reroot_calls == before, "and the workspace did NOT move");
+    }
+
+    printf("7. a dropped FOLDER becomes the workspace\n");
+    {
+        int before = g_reroot_calls;
+        snprintf(abs, sizeof abs, "%s/alpha", WS);
+        ok(host_adopt_path(abs) == 1, "the drop is accepted");
+        ok(g_reroot_calls == before + 1, "the workspace was re-rooted once");
+        ok(listed("", "INSIDE.C"), "and the volume lists the dropped folder");
+        ok(!listed("", "OTHER.PY"), "not the one it replaced");
+    }
+
+    printf("8. a dropped file from OUTSIDE moves the workspace to it\n");
+    {
+        int before = g_reroot_calls;
+        snprintf(abs, sizeof abs, "%s/beta/OTHER.PY", WS);   /* alpha is root now */
+        g_open_calls = 0;
+        ok(host_adopt_path(abs) == 1, "the drop is accepted");
+        ok(g_reroot_calls == before + 1, "the workspace followed the file");
+        ok(g_open_calls == 1 && !strcmp(g_opened_name, "OTHER.PY"),
+           "and the file itself was opened");
+        ok(listed("", "OTHER.PY"), "the volume is its folder now");
+    }
+
+    printf("9. a dropped path that does not exist is refused\n");
+    {
+        int before = g_reroot_calls;
+        snprintf(abs, sizeof abs, "%s/nothing/here.txt", WS);
+        ok(host_adopt_path(abs) == 0, "refused");
+        ok(g_reroot_calls == before, "and nothing moved");
     }
 
     printf("\n%s: %d failure(s)\n", g_fail ? "FAILED" : "PASSED", g_fail);

@@ -48,6 +48,10 @@ int  host_fs_set_volume_root(int vol, const char *root);
  * (volume, directory, name) the core addresses files by. */
 void        host_dialog_set_root(const char *root);
 const char *host_dialog_root(void);
+/* Adopt an absolute host path from outside the picker - a dropped file opens,
+ * a dropped folder becomes the workspace (UCD-19).  Shares the picker's
+ * re-rooting rules rather than reimplementing them. */
+int         host_adopt_path(const char *abs);
 int         host_pick_path(int want_folder, char *out, int cap);
 void        host_recent_file(const char *home);
 void        host_recent_load(void);

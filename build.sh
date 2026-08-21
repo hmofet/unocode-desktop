@@ -133,8 +133,7 @@ EOF
 fs_test() {
     mkdir -p build
     rm -rf build/fs_test_ws
-    $CC -O1 -g $WARN -DALIAS_MAX=8 -DALIAS_DIRS=8 \
-        tools/fs_test.c host/host_fs.c -o build/fs_test
+    $CC -O1 -g $WARN tools/fs_test.c host/host_fs.c -o build/fs_test
     ./build/fs_test build/fs_test_ws
 }
 

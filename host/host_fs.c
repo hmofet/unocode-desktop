@@ -1,19 +1,19 @@
 /* ===========================================================================
  * host_fs.c - the uno_fs_* seam over a real operating system's filesystem.
  *
- * The editor core speaks FAT: integer volumes, '\\'-joined paths, upper-cased
- * names, and listings capped at 15 characters.  This file makes a directory
- * tree on the host answer in that dialect:
+ * The editor core speaks FAT: integer volumes, '\\'-joined paths and
+ * upper-cased names.  This file makes a directory tree on the host answer in
+ * that dialect:
  *
  *   - each volume is a root directory registered at startup;
  *   - every path component is resolved CASE-INSENSITIVELY, because the core
  *     upper-cases paths (FAT does not care; ext4 does);
  *   - uno_fs_fat_index() answers -1 for every volume, which sends the core
- *     down its documented fallback road (uno_fs_list_dir + uno_fs_isdir), the
- *     one road of the two whose name buffers hold 15 characters, not 12;
- *   - a name too long for those 15 characters is given a FAT-style ALIAS
- *     ("VeryLongCo~1.tsx") which is what crosses the seam, and which resolve()
- *     turns back into the real name on the way to the host.  See below.
+ *     down its documented fallback road (uno_fs_list_dir + uno_fs_isdir);
+ *   - names cross the seam VERBATIM, at whatever width the caller asked for.
+ *     Until UCD-11 the seam was 15 bytes wide and this file kept a FAT-style
+ *     alias table to squeeze real names through it; the seam takes a stride
+ *     now, so the table is gone.
  *
  * Return conventions are the core's, verified against its call sites:
  * read/size answer bytes or -1; write/mkdir/delete answer 1 on success, 0 on
@@ -39,6 +39,11 @@
 
 #define MAXVOL   8
 #define MAXPATH  1024
+/* The width this file hands out when IT owns the buffer (the root listing).
+ * Every other listing is the caller's array at the caller's stride, which is
+ * the whole point of the seam taking one - this constant binds nothing but
+ * g_rootlist and never has to agree with the core's. */
+#define UC_HOST_NAME_MAX 256
 
 typedef struct {
     char name[16];              /* volume label shown by the core            */
@@ -163,255 +168,36 @@ static int match_component(const char *dir, const char *want, char *out, int cap
     return 0;
 }
 
-/* ---- long names: a FAT-style alias table ----------------------------------
- * The listing seam hands out char[16] buffers, so 15 bytes is all a name gets.
- * Withholding anything longer - the phase-0 behaviour - makes a real project
- * look half-empty, because most source files are named past that.  So do what
- * FAT itself did: give the long name a short ALIAS, hand the alias across the
- * seam, and translate it back here.
+/* ---- long names ------------------------------------------------------------
+ * There is nothing here any more, and that is the feature.
  *
- *   VeryLongComponentName.tsx   ->   VeryLongCo~1.tsx
+ * Phase 0 could only pass 15 bytes across the listing seam, so this file kept
+ * a FAT-style alias table - VeryLongComponentName.tsx became VeryLongCo~1.tsx
+ * on the way out and was translated back on every read, write, mkdir and
+ * listing.  ~230 lines, four caps, a hash table and a string pool, all to make
+ * a normal project listable.
  *
- * The extension is kept WHOLE (the core picks the language, the icon and the
- * grammar off it) and the base is truncated to fit, never mid-UTF-8-sequence.
- * A file is therefore listed, opened, edited and saved back to its original
- * name; only the DISPLAY is shortened.  UCD-11 widens the seam upstream and
- * this table goes away.
- *
- * Two properties this must have and does:
- *   - STABLE within a session.  An alias, once handed out, is remembered for
- *     the (volume, directory, name) it was made for, so a tab opened before an
- *     explorer refresh still points at the same file afterwards.  Candidates
- *     are probed in a deterministic order and the first free one wins, so a
- *     re-listing of an unchanged directory reproduces the same table.
- *   - BOUNDED, and loudly.  The table, its name pool and its directory list
- *     all have caps; hitting one is reported on stderr once, and names beyond
- *     it fall back to phase 0's behaviour (withheld) rather than being served
- *     under an alias that resolve() cannot honour.
- *
- * A candidate collides if another alias in the same directory already uses it,
- * or if a real file of that name is there.  The real-file probe is a single
- * stat(), not a directory scan: on a case-sensitive host a real file differing
- * only in case would slip past it, but resolve() consults this table first, so
- * the alias still reaches the file it was minted for. */
-
-#define SEAM_NAME_MAX  15               /* char[16] minus the terminator     */
-#define ALIAS_DIRKEY   128              /* core-side dir; UC_PATH_MAX is 72  */
-
-/* The caps are -D-overridable so tools/fs_test.c can drive the full-table road
- * with eight names instead of four thousand.  ALIAS_HASH must stay a power of
- * two and at least twice ALIAS_MAX, or alias_find()'s probe never terminates
- * on a full table. */
-#ifndef ALIAS_DIRS
-#  define ALIAS_DIRS   128
-#endif
-#ifndef ALIAS_MAX
-#  define ALIAS_MAX    4096
-#endif
-#ifndef ALIAS_POOL
-#  define ALIAS_POOL   (192 * 1024)
-#endif
-#ifndef ALIAS_HASH
-#  define ALIAS_HASH   (2 * ALIAS_MAX)
-#endif
-
-typedef struct {
-    int  vol;
-    char path[ALIAS_DIRKEY];            /* normalised core-side directory    */
-} AliasDir;
-
-typedef struct {
-    int  dir;                           /* index into g_adir                 */
-    int  off;                           /* real name, offset into g_apool    */
-    char alias[16];                     /* the spelling that crosses the seam*/
-} AliasEnt;
-
-static AliasDir g_adir[ALIAS_DIRS];
-static int      g_adirn;
-static AliasEnt g_alias[ALIAS_MAX];
-static int      g_aliasn;
-static char     g_apool[ALIAS_POOL];
-static int      g_apooln;
-static int      g_ahash[ALIAS_HASH];    /* 1-based entry index; 0 = empty    */
-static int      g_alias_full;           /* a cap was hit and has been logged */
-
-static void alias_cap(const char *what)
-{
-    if (g_alias_full) return;
-    g_alias_full = 1;
-    fprintf(stderr, "host_fs: long-name alias table full (%s); files with "
-                    "names over %d bytes are hidden from here on\n",
-            what, SEAM_NAME_MAX);
-}
-
-/* "src\\Components\\" and "/SRC/components" both key the same directory */
-static void norm_dir(const char *dir, char *out, int cap)
-{
-    int n = 0;
-    const char *p = dir ? dir : "";
-    while (*p == '\\' || *p == '/') p++;
-    while (*p && n < cap - 1) {
-        char c = *p++;
-        if (c == '/') c = '\\';
-        if (c == '\\') {
-            while (*p == '\\' || *p == '/') p++;
-            if (!*p) break;                       /* a trailing separator */
-        }
-        out[n++] = c;
-    }
-    out[n] = 0;
-}
-
-/* Index of (vol, dir) in the directory list, or -1.  A dir too long to key is
- * refused rather than truncated: a truncated key would alias a DIFFERENT
- * directory's names, and no alias is better than the wrong file. */
-static int alias_dir_index(int vol, const char *dir, int create)
-{
-    char key[ALIAS_DIRKEY];
-    int i;
-
-    if (dir && strlen(dir) >= ALIAS_DIRKEY - 1) return -1;
-    norm_dir(dir, key, sizeof key);
-    for (i = 0; i < g_adirn; i++)
-        if (g_adir[i].vol == vol && ieq(g_adir[i].path, key)) return i;
-    if (!create) return -1;
-    if (g_adirn >= ALIAS_DIRS) { alias_cap("directories"); return -1; }
-    g_adir[g_adirn].vol = vol;
-    strcpy(g_adir[g_adirn].path, key);
-    return g_adirn++;
-}
-
-static unsigned alias_hash(int di, const char *alias)
-{
-    unsigned h = 2166136261u ^ (unsigned)di;
-    for (; *alias; alias++) {
-        int c = (unsigned char)*alias;
-        if (c >= 'A' && c <= 'Z') c += 32;
-        h = (h ^ (unsigned)c) * 16777619u;
-    }
-    return h;
-}
-
-/* The entry for (di, alias), or 0.  Open addressing, never deleted from, so a
- * run of probes ends at the first empty slot. */
-static AliasEnt *alias_find(int di, const char *alias)
-{
-    unsigned i = alias_hash(di, alias) & (ALIAS_HASH - 1);
-    if (di < 0) return 0;
-    for (;;) {
-        int slot = g_ahash[i];
-        if (!slot) return 0;
-        if (g_alias[slot - 1].dir == di && ieq(g_alias[slot - 1].alias, alias))
-            return &g_alias[slot - 1];
-        i = (i + 1) & (ALIAS_HASH - 1);
-    }
-}
-
-static int alias_insert(int di, const char *alias, const char *real)
-{
-    int len = (int)strlen(real) + 1;
-    unsigned i;
-    if (g_aliasn >= ALIAS_MAX)       { alias_cap("names");     return 0; }
-    if (g_apooln + len > ALIAS_POOL) { alias_cap("name pool"); return 0; }
-    g_alias[g_aliasn].dir = di;
-    g_alias[g_aliasn].off = g_apooln;
-    strcpy(g_alias[g_aliasn].alias, alias);
-    memcpy(g_apool + g_apooln, real, (size_t)len);
-    g_apooln += len;
-    i = alias_hash(di, alias) & (ALIAS_HASH - 1);
-    while (g_ahash[i]) i = (i + 1) & (ALIAS_HASH - 1);
-    g_ahash[i] = ++g_aliasn;
-    return 1;
-}
-
-/* Compose the n-th alias candidate for `real`: <base>~<n><ext>, within
- * SEAM_NAME_MAX bytes.  `out` must hold 16. */
-static void alias_build(const char *real, int n, char *out)
-{
-    char suf[8];
-    const char *dot = 0, *p;
-    int rl = (int)strlen(real), el, sl, keep, v, i;
-
-    for (p = real + 1; *p; p++) if (*p == '.') dot = p;
-    el = dot ? (int)(real + rl - dot) : 0;
-    if (el > 8) el = 0;                   /* that is not a suffix, it is text */
-
-    suf[0] = '~';
-    for (v = n, sl = 1; v >= 10; v /= 10) sl++;
-    suf[1 + sl] = 0;
-    for (v = n, i = sl; i >= 1; i--) { suf[i] = (char)('0' + v % 10); v /= 10; }
-    sl += 1;                                             /* the '~' itself   */
-
-    keep = SEAM_NAME_MAX - el - sl;
-    if (keep < 0) { el = 0; keep = SEAM_NAME_MAX - sl; }
-    if (keep > rl - el) keep = rl - el;
-    if (keep < 0) keep = 0;
-    /* never split a UTF-8 sequence: back off the truncation to a lead byte */
-    while (keep > 0 && ((unsigned char)real[keep] & 0xC0) == 0x80) keep--;
-
-    memcpy(out, real, (size_t)keep);
-    strcpy(out + keep, suf);
-    if (el) memcpy(out + keep + sl, real + rl - el, (size_t)el);
-    out[keep + sl + el] = 0;
-}
-
-/* The alias for `real` in `coredir` of `vol`, minting one if needed, or 0 if a
- * cap has been reached.  `hostdir` is that directory's resolved host path, for
- * the real-file collision probe. */
-static const char *alias_for(int vol, const char *coredir, const char *hostdir,
-                             const char *real)
-{
-    char cand[16], probe[MAXPATH];
-    struct stat st;
-    int di = alias_dir_index(vol, coredir, 1), n;
-
-    if (di < 0) return 0;
-    for (n = 1; n < 100000; n++) {
-        AliasEnt *e;
-        alias_build(real, n, cand);
-        e = alias_find(di, cand);
-        if (e) {
-            if (!strcmp(g_apool + e->off, real)) return e->alias;  /* ours */
-            continue;                                   /* somebody else's */
-        }
-        if (snprintf(probe, sizeof probe, "%s/%s", hostdir, cand)
-                < (int)sizeof probe && stat(probe, &st) == 0)
-            continue;                            /* a real file is named that */
-        if (!alias_insert(di, cand, real)) return 0;
-        return alias_find(di, cand)->alias;
-    }
-    return 0;
-}
-
-/* The real name behind `comp` in `coredir` of `vol`, or 0 if it is not an
- * alias.  Every alias carries a '~', so an ordinary name costs one strchr. */
-static const char *alias_real(int vol, const char *coredir, const char *comp)
-{
-    AliasEnt *e;
-    int di;
-    if (!g_aliasn || !strchr(comp, '~')) return 0;
-    di = alias_dir_index(vol, coredir, 0);
-    if (di < 0) return 0;
-    e = alias_find(di, comp);
-    return e ? g_apool + e->off : 0;
-}
+ * UCD-11 widened the seam instead (uno_fs_list_dir takes the caller's stride
+ * now), so names cross verbatim and the table, its caps and its whole class of
+ * failure - a stale alias resolving into the wrong file - are gone. */
 
 /* Resolve a core-side path ("EXT\\HELLO\\MAIN.JS", any case) to a host path.
  * `create_leaf` lets a path whose FINAL component does not exist yet resolve
  * anyway (for writes and mkdir); every parent must exist either way.
- * Alias components are translated as they are walked, so a long name is a real
- * name again by the time it reaches the host - at every depth, not just the
- * last one, because a long DIRECTORY name is aliased too. */
+ *
+ * Every component is now the file's REAL name - UCD-11 widened the seam, so
+ * there is no alias to translate back and no per-directory table to consult.
+ * The only translation left is the case-insensitive match the core was
+ * written against, which match_component() does against the actual disk. */
 static int resolve(int vol, const char *path, char *out, int create_leaf)
 {
-    char comp[MAXPATH], found[MAXPATH], key[ALIAS_DIRKEY];
-    const char *p, *want, *real;
-    int ci, kn = 0;
+    char comp[MAXPATH], found[MAXPATH];
+    const char *p;
+    int ci;
 
     if (vol < 0 || vol >= g_nvol) return 0;
     strncpy(out, g_vol[vol].root, MAXPATH - 1);
     out[MAXPATH - 1] = 0;
-    key[0] = 0;
     if (!path || !path[0]) return 1;
 
     p = path;
@@ -424,32 +210,15 @@ static int resolve(int vol, const char *path, char *out, int create_leaf)
         comp[ci] = 0;
         if (!strcmp(comp, ".") || !strcmp(comp, "..")) return 0;  /* no escape */
 
-        real = kn >= 0 ? alias_real(vol, key, comp) : 0;
-        want = real ? real : comp;
-
-        if (match_component(out, want, found, sizeof found)) {
-            /* fall through with the on-disk spelling */
-        } else {
+        if (!match_component(out, comp, found, sizeof found)) {
             const char *rest = p;
             while (*rest == '\\' || *rest == '/') rest++;
             if (!create_leaf || *rest) return 0;   /* a missing PARENT fails */
-            snprintf(found, sizeof found, "%s", want);
+            snprintf(found, sizeof found, "%s", comp);
         }
         if (strlen(out) + 1 + strlen(found) + 1 > MAXPATH) return 0;
         strcat(out, "/");
         strcat(out, found);
-
-        /* the key tracks the CORE's spelling, which is what list_into keyed */
-        if (kn >= 0) {
-            int need = (kn ? 1 : 0) + ci;
-            if (need + kn >= ALIAS_DIRKEY) kn = -1;      /* too deep to alias */
-            else {
-                if (kn) key[kn++] = '\\';
-                memcpy(key + kn, comp, (size_t)ci);
-                kn += ci;
-                key[kn] = 0;
-            }
-        }
     }
     return 1;
 }
@@ -458,10 +227,8 @@ static int resolve(int vol, const char *path, char *out, int create_leaf)
  * to volume 0 rather than restarting the process, so the explorer, quick open
  * and search all re-root together - they all address the volume, not a path.
  *
- * The alias table is dropped with it: its entries are keyed by (volume,
- * directory, name), and every one of them now describes a tree that is no
- * longer mounted.  Keeping them would leave an alias resolving into the OLD
- * folder, which is the worst of the available outcomes. */
+ * Nothing is cached across the change: with the alias table gone (UCD-11),
+ * this volume's state IS its root path, so re-pointing it is complete. */
 int host_fs_set_volume_root(int vol, const char *root)
 {
     size_t n;
@@ -473,11 +240,6 @@ int host_fs_set_volume_root(int vol, const char *root)
         if (g_vol[vol].root[n] == '\\') g_vol[vol].root[n] = '/';
     n = strlen(g_vol[vol].root);
     while (n > 1 && g_vol[vol].root[n - 1] == '/') g_vol[vol].root[--n] = 0;
-
-    g_aliasn = 0;
-    g_adirn  = 0;
-    g_apooln = 0;
-    memset(g_ahash, 0, sizeof g_ahash);
     return 1;
 }
 
@@ -568,45 +330,44 @@ int uno_fs_mkdir(int vol, const char *path)
     return host_mkdir(hp) == 0;
 }
 
-/* Shared listing walk.  A name that does not fit the seam's 15 bytes is served
- * under an alias (see the alias table above) and only withheld if the table is
- * full; dotfiles and "." / ".." are withheld outright - the core has no notion
- * of a hidden file, and its own config subtree should not look different on
- * the host than it does on a stick. */
-static int list_into(int vol, const char *dir, char (*names)[16], int maxn)
+/* Shared listing walk.  Names cross VERBATIM now (UCD-11): the seam takes the
+ * caller's stride, so the only reason to shorten one would be a slot too small
+ * to hold it, and a name that does not fit is WITHHELD rather than truncated -
+ * a truncated name is a file the core would then fail to open, which is worse
+ * than a file it never saw.  Dotfiles and "." / ".." are withheld outright:
+ * the core has no notion of a hidden file, and its own config subtree should
+ * not look different on the host than it does on a stick. */
+static int list_into(int vol, const char *dir, char *names, int stride, int maxn)
 {
     char hp[MAXPATH];
     DIR *d;
     struct dirent *e;
     int n = 0;
-    if (!resolve(vol, dir, hp, 0)) return 0;
+    if (!resolve(vol, dir, hp, 0) || !names || stride < 2) return 0;
     d = opendir(hp);
     if (!d) return 0;
     while (n < maxn && (e = readdir(d)) != 0) {
         if (e->d_name[0] == '.') continue;
-        if (strlen(e->d_name) <= SEAM_NAME_MAX) {
-            strcpy(names[n++], e->d_name);
-        } else {
-            const char *a = alias_for(vol, dir, hp, e->d_name);
-            if (a) strcpy(names[n++], a);
-        }
+        if ((int)strlen(e->d_name) > stride - 1) continue;
+        strcpy(names + (size_t)n * stride, e->d_name);
+        n++;
     }
     closedir(d);
     return n;
 }
 
-int uno_fs_list_dir(int vol, const char *dir, char (*names)[16], int maxn)
+int uno_fs_list_dir(int vol, const char *dir, char *names, int stride, int maxn)
 {
-    return list_into(vol, dir, names, maxn);
+    return list_into(vol, dir, names, stride, maxn);
 }
 
 /* root listing, two-call form */
-static char g_rootlist[256][16];
+static char g_rootlist[256][UC_HOST_NAME_MAX];
 static int  g_rootn;
 
 int uno_fs_list_begin(int vol)
 {
-    g_rootn = list_into(vol, "", g_rootlist, 256);
+    g_rootn = list_into(vol, "", g_rootlist[0], UC_HOST_NAME_MAX, 256);
     return g_rootn;
 }
 

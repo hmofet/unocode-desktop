@@ -19,10 +19,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "host.h"
 
 extern void uc_open_folder(int vol, const char *dir);
+extern int  uc_doc_open(int vol, const char *dir, const char *name);
 
 /* the picker, per platform; fills an ABSOLUTE host path.  0 = cancelled or
  * unavailable. */
@@ -138,6 +140,52 @@ int pc64_shell_pick(int want_folder, int *vol, char *dir, int dcap,
         uc_open_folder(0, "");
         snprintf(dir, (size_t)dcap, "%s", "");
         snprintf(name, (size_t)ncap, "%s", slash + 1);
+        return 1;
+    }
+}
+
+/* Adopt an absolute host path that arrived from OUTSIDE the picker - today
+ * that means a file or folder dropped on the window (UCD-19).
+ *
+ * It is the picker's own tail end, factored out rather than copied: the rules
+ * for "this is inside the workspace" and "this is not, so move the workspace"
+ * are subtle enough that a second copy would drift, and a drop that re-rooted
+ * differently from an Open would be a bug nobody could describe. */
+int host_adopt_path(const char *in)
+{
+    char abs[1024], dir[512], name[256];
+    struct stat st;
+
+    if (!in || !in[0]) return 0;
+    snprintf(abs, sizeof abs, "%s", in);
+    normalise(abs);
+    if (stat(abs, &st) != 0) return 0;
+
+    if ((st.st_mode & S_IFMT) == S_IFDIR) {
+        if (!host_fs_set_volume_root(0, abs)) return 0;
+        host_dialog_set_root(abs);
+        host_recent_add(abs);
+        uc_open_folder(0, "");
+        return 1;
+    }
+
+    if (under_root(abs, dir, sizeof dir, name, sizeof name)) {
+        uc_doc_open(0, dir, name);
+        return 1;
+    }
+    {   /* outside the workspace: move to its folder, as the picker does */
+        char folder[1024];
+        char *slash;
+        snprintf(folder, sizeof folder, "%s", abs);
+        slash = strrchr(folder, '/');
+        if (!slash) return 0;
+        *slash = 0;
+        if (!folder[0]) { folder[0] = '/'; folder[1] = 0; }
+        if (!host_fs_set_volume_root(0, folder)) return 0;
+        host_dialog_set_root(folder);
+        host_recent_add(folder);
+        uc_open_folder(0, "");
+        uc_doc_open(0, "", slash + 1);
         return 1;
     }
 }
