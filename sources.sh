@@ -56,6 +56,16 @@ for _c in $(find "$U/pc64/bearssl/src" -name '*.c' | sort); do
 done
 TLS="$U/pc64/tls_ca.c"
 
+# The name resolver runs getaddrinfo on a thread (UCD-47), because there is no
+# portable asynchronous form of it and a blocking one costs the editor its
+# frame. This is the POSIX side of that: glibc 2.34+ folds pthreads into libc,
+# but older systems and some BSDs still want the flag, and it is a harmless
+# no-op where it is already there (macOS included).
+#
+# The Windows build does NOT use it - it spawns through _beginthreadex from the
+# CRT, so there is nothing extra to link beyond what it already does.
+NETLIBS="-lpthread"
+
 INC="-Ihost/compat -I$U/pc64 -Icore -I$U/unoui -I$U/unojs -Ihost \
      -I$U/pc64/bearssl/inc -I$U/pc64/bearssl/src"
 DEFS="-DUNO_PC64"

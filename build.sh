@@ -78,7 +78,7 @@ build_native() {
     bearssl_archive build/bearssl.a "$CC" "${AR:-ar}"
     $CC -O2 -g $WARN $DEFS $INC $(sdl2-config --cflags) \
         $HOST $UC $UNOUI $UNOJS $FB $TLS \
-        -o build/unocode $(sdl2-config --libs) build/bearssl.a -lm
+        -o build/unocode $(sdl2-config --libs) build/bearssl.a -lm $NETLIBS
     stage_res build/res
     echo "built: build/unocode"
 }
@@ -198,7 +198,7 @@ http_test() {
     # shellcheck disable=SC2086
     $CC -O1 -g $WARN $DEFS $INC tools/http_test.c \
         core/uc_json.c core/uc_util.c host/host_net.c $TLS \
-        -o build/http_test build/bearssl.a -lm
+        -o build/http_test build/bearssl.a -lm $NETLIBS
     ./build/http_test
 }
 

@@ -32,7 +32,7 @@ bearssl_a=build/bearssl.a
 
 # shellcheck disable=SC2086
 $CC -O1 -g $WARN $DEFS $INC tools/net_test.c host/host_net.c $TLS \
-    -o build/net_test "$bearssl_a" -lm
+    -o build/net_test "$bearssl_a" -lm $NETLIBS
 
 # A throwaway self-signed certificate.  Its subject deliberately does NOT
 # matter: it is refused for having no chain to a trusted root, which is a

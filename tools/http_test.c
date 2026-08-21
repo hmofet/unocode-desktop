@@ -346,10 +346,137 @@ static void t_live(void)
     uc_http_free(h);
 }
 
+/* ---- the claim UCD-47 actually makes -------------------------------------- */
+
+/* "It does not stop the frame" is not a feeling, it is a number: the longest
+ * time spent inside a single uc_http_poll() call. A frame at 60 Hz is 16.7 ms
+ * and the editor has to draw in it too, so anything over a couple of
+ * milliseconds is a stutter and anything over ~16 is a dropped frame.
+ *
+ * This is measured across a REAL request including the name lookup, because
+ * the name lookup is the step that used to block: uc_http_begin() called
+ * getaddrinfo, which on a cold cache takes as long as it takes. */
+static double ms_now(void)
+{
+#ifdef _WIN32
+    LARGE_INTEGER f, c;
+    QueryPerformanceFrequency(&f); QueryPerformanceCounter(&c);
+    return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+#endif
+}
+
+static void t_no_stall(void)
+{
+    uc_header hd[2];
+    uc_http_req r;
+    uc_http *h;
+    double worst = 0, after = 0, t0, t1, begin_ms;
+    int i, rc = UC_HTTP_PENDING, polls = 0, worst_at = -1;
+
+    puts("8. no call stops the frame");
+
+    hd[0].name = "content-type";      hd[0].value = "application/json";
+    hd[1].name = "anthropic-version"; hd[1].value = "2023-06-01";
+
+    memset(&r, 0, sizeof r);
+    r.host = "api.anthropic.com"; r.method = "POST"; r.path = "/v1/messages";
+    r.headers = hd; r.nheaders = 2;
+    r.body = "{\"model\":\"claude-sonnet-5\",\"max_tokens\":1,"
+             "\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
+    r.body_len = -1;
+
+    /* begin() is timed too: it is the call that used to carry the whole DNS
+     * lookup, so it is the one whose old number was seconds. */
+    t0 = ms_now();
+    h = uc_http_begin(&r);
+    begin_ms = ms_now() - t0;
+    if (!h) { ok(0, "began the request"); return; }
+
+    for (i = 0; i < 30000 && rc == UC_HTTP_PENDING; i++) {
+        uc_net_pump();
+        t0 = ms_now();
+        rc = uc_http_poll(h);
+        t1 = ms_now();
+        if (t1 - t0 > worst) { worst = t1 - t0; worst_at = polls; }
+        /* Once a status line has arrived the handshake is behind us, so from
+         * here the numbers are the cost of MOVING DATA - which is the cost a
+         * streaming generation pays over and over. */
+        if (uc_http_status(h) && t1 - t0 > after) after = t1 - t0;
+        polls++;
+        if (rc == UC_HTTP_PENDING) nap();
+    }
+
+    printf("        %d polls, begin %.2f ms, worst %.2f ms (poll #%d), "
+           "worst after handshake %.2f ms\n",
+           polls, begin_ms, worst, worst_at, after);
+    ok(rc == UC_HTTP_DONE, "the request completed");
+    ok(begin_ms < 16.0, "uc_http_begin() returned within one frame");
+    ok(worst < 16.0, "and no single poll took a frame's worth of time");
+
+    /* The one that matters for a long generation. The handshake's certificate
+     * verification is a few milliseconds of unavoidable arithmetic and happens
+     * ONCE; if the transfer itself ever costs that much per poll, streaming
+     * has started stuttering and this is what will say so. */
+    ok(after < 2.0, "and moving data costs well under a frame, every time");
+
+    /* A lookup was genuinely needed and genuinely pumped, rather than the
+     * whole thing having been answered out of a warm cache in one call. */
+    ok(polls > 1, "the exchange really was spread across many polls");
+    uc_http_free(h);
+}
+
+/* Cancelling mid-flight must return immediately and leave nothing behind. The
+ * hard case is cancelling DURING the name lookup: getaddrinfo cannot be
+ * interrupted, so a cancel that waited for it would block for exactly as long
+ * as the thing it was abandoning. */
+static void t_cancel(void)
+{
+    uc_http_req r;
+    uc_http *h;
+    double t0, spent;
+    int i;
+
+    puts("9. cancelling");
+
+    memset(&r, 0, sizeof r);
+    r.host = "api.anthropic.com"; r.method = "GET"; r.path = "/";
+
+    /* Cancel immediately, while the lookup is almost certainly still running. */
+    h = uc_http_begin(&r);
+    if (!h) { ok(0, "began"); return; }
+    t0 = ms_now();
+    uc_http_free(h);
+    spent = ms_now() - t0;
+    printf("        cancel during resolve: %.2f ms\n", spent);
+    ok(spent < 16.0, "cancelling during the name lookup returns at once");
+
+    /* And a second request straight afterwards must still work - i.e. the
+     * abandoned lookup released the single resolver slot rather than wedging
+     * it, which is the failure this refcount exists to prevent. */
+    h = uc_http_begin(&r);
+    if (!h) { ok(0, "began a second request"); return; }
+    for (i = 0; i < 30000; i++) {
+        int rc;
+        uc_net_pump();
+        rc = uc_http_poll(h);
+        if (rc != UC_HTTP_PENDING) break;
+        nap();
+    }
+    ok(uc_http_status(h) > 0,
+       "a request started right after a cancel still completes");
+    uc_http_free(h);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--live") == 0) {
         t_live();
+        t_no_stall();
+        t_cancel();
         printf("\n%s: %d failure(s)\n", fails ? "FAILED" : "PASSED", fails);
         return fails ? 1 : 0;
     }

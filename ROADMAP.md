@@ -393,7 +393,7 @@ is that **`uc_http.c` must not include `unocode.h`** - it should need only
   still green.
 
 ### UCD-47: the request must not stop the frame
-**Status:** open · **Size:** M · **Depends:** UCD-46
+**Status:** done (upstream: net.c gains a non-blocking resolver) · **Size:** M
 
 Studio's `do_request()` runs to completion inside one frame. Drive the exchange
 from the frame loop instead, as a state machine the host pumps, so the editor

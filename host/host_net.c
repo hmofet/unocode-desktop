@@ -194,6 +194,141 @@ int uc_net_resolve(const char *host, unsigned char ip[4])
     return 1;
 }
 
+/* ---- resolving without stopping the frame ---------------------------------
+ * getaddrinfo() blocks and there is no portable asynchronous form of it, so it
+ * runs on a thread.  That is the whole trick; the care is all in cancelling.
+ *
+ * A BLOCKED getaddrinfo CANNOT BE CANCELLED.  There is no portable way to
+ * interrupt one, and a cancel that joined the thread would block for exactly
+ * as long as the lookup it was trying to abandon - which is the bug, not the
+ * fix.  So a cancelled lookup is ORPHANED: the job is refcounted, the owner
+ * drops its reference and walks away, the thread finishes whenever the
+ * resolver gives up and drops the last one.  Nothing leaks and nothing waits.
+ *
+ * `done` is read under the same lock that guards the refcount rather than
+ * being declared volatile and hoped over.  poll() runs once a frame; a lock
+ * and an unlock there cost nothing worth reasoning about, and this way the
+ * memory model is not something the reader has to take on trust.
+ */
+#ifdef _WIN32
+  #include <process.h>
+  typedef CRITICAL_SECTION lock_t;
+  #define lock_init(l)  InitializeCriticalSection(l)
+  #define lock_take(l)  EnterCriticalSection(l)
+  #define lock_drop(l)  LeaveCriticalSection(l)
+#else
+  #include <pthread.h>
+  typedef pthread_mutex_t lock_t;
+  #define lock_init(l)  pthread_mutex_init(l, 0)
+  #define lock_take(l)  pthread_mutex_lock(l)
+  #define lock_drop(l)  pthread_mutex_unlock(l)
+#endif
+
+typedef struct {
+    int  refs;                  /* the owner and the thread, guarded by g_lock */
+    int  done;
+    int  ok;
+    unsigned char ip[4];
+    char host[256];
+} resolve_job;
+
+static lock_t g_lock;
+static int    g_lock_ready;
+static resolve_job *g_job;      /* the caller's job, or NULL */
+
+static void job_release(resolve_job *j)
+{
+    int last;
+    lock_take(&g_lock);
+    last = (--j->refs == 0);
+    lock_drop(&g_lock);
+    if (last) free(j);
+}
+
+static void resolve_body(resolve_job *j)
+{
+    struct addrinfo hints, *res = 0;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(j->host, 0, &hints, &res) == 0 && res) {
+        memcpy(j->ip, &((struct sockaddr_in *)res->ai_addr)->sin_addr, 4);
+        j->ok = 1;
+        freeaddrinfo(res);
+    }
+    lock_take(&g_lock);
+    j->done = 1;
+    lock_drop(&g_lock);
+    job_release(j);
+}
+
+#ifdef _WIN32
+static unsigned __stdcall resolve_thread(void *p)
+{ resolve_body((resolve_job *)p); return 0; }
+#else
+static void *resolve_thread(void *p)
+{ resolve_body((resolve_job *)p); return 0; }
+#endif
+
+int uc_net_resolve_begin(const char *host, unsigned char ip[4])
+{
+    resolve_job *j;
+    unsigned hl = 0;
+
+    if (!host || !*host) return UC_NET_ENODNS;
+    if (parse_quad(host, ip)) return 1;
+    if (looks_numeric(host)) return UC_NET_ENODNS;
+    if (!uc_net_up()) return UC_NET_ENOLINK;
+    if (g_job) return UC_NET_EBUSY;
+
+    if (!g_lock_ready) { lock_init(&g_lock); g_lock_ready = 1; }
+
+    while (host[hl]) hl++;
+    if (hl >= sizeof j->host) return UC_NET_ENODNS;
+
+    j = (resolve_job *)calloc(1, sizeof *j);
+    if (!j) return UC_NET_ENOMEM;
+    memcpy(j->host, host, hl + 1);
+    j->refs = 2;                                  /* this caller, and the thread */
+
+#ifdef _WIN32
+    {   uintptr_t th = _beginthreadex(0, 0, resolve_thread, j, 0, 0);
+        if (!th) { free(j); return UC_NET_ERR; }
+        CloseHandle((HANDLE)th);                  /* detached: we never join */
+    }
+#else
+    {   pthread_t th;
+        if (pthread_create(&th, 0, resolve_thread, j) != 0) {
+            free(j); return UC_NET_ERR;
+        }
+        pthread_detach(th);
+    }
+#endif
+    g_job = j;
+    return 0;
+}
+
+int uc_net_resolve_poll(unsigned char ip[4])
+{
+    int done, ok;
+    if (!g_job) return UC_NET_ENODNS;
+    lock_take(&g_lock);
+    done = g_job->done;
+    ok = g_job->ok;
+    lock_drop(&g_lock);
+    if (!done) return 0;
+    if (!ok) return UC_NET_ENODNS;
+    memcpy(ip, g_job->ip, 4);
+    return 1;
+}
+
+void uc_net_resolve_end(void)
+{
+    resolve_job *j = g_job;
+    g_job = 0;
+    if (j) job_release(j);
+}
+
 /* ---- a session ------------------------------------------------------------ */
 
 static int set_nonblocking(sockfd fd)
