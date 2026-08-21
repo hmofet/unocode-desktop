@@ -21,17 +21,20 @@ daily driver on Windows, Linux and macOS. What exists:
 - The editor is [benchmarked](BENCHMARK.md) against VS Code and wins on startup,
   memory, process count and disk by large multiples.
 
-**Start with UCD-47.** Tier A was inserted ahead of Tier 1 on 2026-08-21,
-because the assistant is what the product is going to be shown doing. Three of
+**Start with UCD-48.** Tier A was inserted ahead of Tier 1 on 2026-08-21,
+because the assistant is what the product is going to be shown doing. Four of
 it are done: UCD-44 moved the editor into this repository, UCD-45 built the
-network seam, and UCD-46 built `core/uc_http.c` on top of it - arbitrary
-headers, incremental chunked decoding and SSE events delivered as they arrive.
+network seam, UCD-46 built `core/uc_http.c` on top of it - arbitrary headers,
+incremental chunked decoding and SSE events delivered as they arrive - and
+UCD-47 took the last blocking step out of a request.
 A real unauthenticated POST to api.anthropic.com returns a 401 whose JSON
 error is read back out, so the whole stack is proved against the real API.
 
-**The last blocking step in a request is DNS.** `uc_http_begin()` resolves
-through `uc_net_resolve()`, and that call blocks on both platforms. Everything
-after it is pumped. That is UCD-47's to remove.
+**Nothing in a request blocks any more** (UCD-47). Measured on a real request
+to api.anthropic.com: `uc_http_begin()` 0.07 ms, worst poll 8.32 ms, worst
+poll after the handshake 0.04 ms. That 8 ms is the certificate chain
+verification - real arithmetic, once per request - which is why the test
+asserts separately on the post-handshake figure.
 
 UCD-11 waits - it buys long filenames on the desktop and nothing at all on the
 device, where FAT is 8.3 regardless.
