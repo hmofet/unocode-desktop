@@ -1106,6 +1106,26 @@ static void c_palette(void)    { uc_quick_open(UC_Q_COMMAND); }
 static void c_quickopen(void)  { uc_quick_open(UC_Q_FILE); }
 static void c_gotoline(void)   { uc_quick_open(UC_Q_LINE); }
 static void c_gotosymbol(void) { uc_quick_open(UC_Q_SYMBOL); }
+static void c_split(void)      { uc_group_split(); }
+static void c_focus_group1(void) { uc_group_focus(0); }
+static void c_focus_group2(void) { uc_group_focus(1); }
+static void c_unsplit(void)
+{
+    /* Fold the second group away, keeping its editors open in the first -
+     * closing a PANE should not close the files that were in it.  Each pass
+     * takes the group's first editor, because closing shifts the rest down. */
+    while (uc_group_count(1) > 0) {
+        int di = uc_group_doc(1, 0);
+        if (di < 0) break;
+        uc_group_show(0, di);
+        uc_group_close(1, di);
+    }
+    UC.ngroup = 1;
+    UC.group = 0;
+    uc_layout();
+    uc_focus(UC_F_EDITOR);
+    uc_repaint();
+}
 static void c_theme(void)      { uc_quick_open(UC_Q_THEME); }
 static void c_langmode(void)   { uc_quick_open(UC_Q_LANG); }
 static void c_keys_ui(void)    { uc_quick_open(UC_Q_KEYS); }
@@ -1321,6 +1341,10 @@ void uc_cmd_init(void)
     reg("workbench.action.quickOpen", "View", "Go to File...", c_quickopen);
     reg("workbench.action.gotoLine", "View", "Go to Line...", c_gotoline);
     reg("workbench.action.gotoSymbol", "View", "Go to Symbol in File...", c_gotosymbol);
+    reg("workbench.action.splitEditor", "View", "Split Editor", c_split);
+    reg("workbench.action.focusFirstEditorGroup", "View", "Focus First Editor Group", c_focus_group1);
+    reg("workbench.action.focusSecondEditorGroup", "View", "Focus Second Editor Group", c_focus_group2);
+    reg("workbench.action.joinAllGroups", "View", "Join Editor Groups", c_unsplit);
     reg("workbench.action.toggleSidebarVisibility", "View", "Toggle Side Bar", c_toggle_sidebar);
     reg("workbench.view.explorer", "View", "Show Explorer", c_view_explorer);
     reg("workbench.view.search", "View", "Show Search", c_view_search);
@@ -1367,6 +1391,9 @@ void uc_cmd_init(void)
     bind("ctrl+p", "workbench.action.quickOpen", 0);
     bind("ctrl+g", "workbench.action.gotoLine", 0);
     bind("ctrl+shift+o", "workbench.action.gotoSymbol", 0);
+    bind("ctrl+\\", "workbench.action.splitEditor", 0);
+    bind("ctrl+1", "workbench.action.focusFirstEditorGroup", 0);
+    bind("ctrl+2", "workbench.action.focusSecondEditorGroup", 0);
     bind("ctrl+z", "undo", "editorTextFocus");
     bind("ctrl+y", "redo", "editorTextFocus");
     bind("ctrl+shift+z", "redo", "editorTextFocus");

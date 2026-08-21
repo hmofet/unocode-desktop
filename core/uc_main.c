@@ -186,10 +186,25 @@ void uc_layout(void)
     }
     {
         int w = c.w - act - side;
-        UC.tabs   = (UcRect){ x, c.y, w, tabs };
-        UC.crumbs = (UcRect){ x, c.y + tabs, w, crumbs };
-        UC.editor = (UcRect){ x, c.y + tabs + crumbs, w,
-                              body_h - tabs - crumbs - panel };
+        int eh = body_h - tabs - crumbs - panel;
+        /* One group or two, side by side (UCD-18).  A split under ~420 px of
+         * editor width would give each half less than a usable line, so the
+         * layout collapses back to one rather than honouring a split nobody
+         * could read. */
+        int split = (UC.ngroup > 1 && w >= 420);
+        int w1 = split ? w / 2 : w;
+        UC.tabs   = (UcRect){ x, c.y, w1, tabs };
+        UC.crumbs = (UcRect){ x, c.y + tabs, w1, crumbs };
+        UC.editor = (UcRect){ x, c.y + tabs + crumbs, w1, eh };
+        if (split) {
+            int x2 = x + w1, w2 = w - w1;
+            UC.tabs2   = (UcRect){ x2, c.y, w2, tabs };
+            UC.crumbs2 = (UcRect){ x2, c.y + tabs, w2, crumbs };
+            UC.editor2 = (UcRect){ x2, c.y + tabs + crumbs, w2, eh };
+        } else {
+            UC.tabs2 = UC.crumbs2 = UC.editor2 = (UcRect){ 0, 0, 0, 0 };
+            if (UC.ngroup > 1 && w < 420) UC.group = 0;
+        }
         UC.panel  = (UcRect){ x, c.y + body_h - panel, w, panel };
     }
     UC.status = (UcRect){ c.x, c.y + body_h, c.w, status };
@@ -267,9 +282,28 @@ static void uc_draw(unoui_widget *w, unoui_rect r, void *ctx)
 
     if (UC.activity.w) uc_activity_draw(UC.activity);
     if (UC.sidebar.w)  uc_sidebar_draw(UC.sidebar);
-    if (UC.tabs.h)     uc_tabs_draw(UC.tabs);
+    if (UC.tabs.h)     uc_tabs_group_draw(UC.tabs, 0);
     if (UC.crumbs.h)   uc_breadcrumb_draw(UC.crumbs);
-    uc_edit_draw(UC.editor, uc_doc_active(), UC.focus == UC_F_EDITOR);
+    /* Each group paints ITS active editor with ITS OWN view.  The painter is
+     * written against a UcDoc and there is one per file, so the unfocused
+     * group's scroll and cursors are borrowed in around the call (UCD-18). */
+    if (UC.editor2.w) {
+        int g;
+        for (g = 0; g < 2; g++) {
+            UcRect r2 = g ? UC.editor2 : UC.editor;
+            int di = uc_group_active(g);
+            UcDoc *gd = uc_doc_at(di);
+            int focused = (UC.focus == UC_F_EDITOR && UC.group == g);
+            if (g != UC.group && gd) uc_group_view_push(g, gd);
+            uc_edit_draw(r2, gd, focused);
+            if (g != UC.group && gd) uc_group_view_pop(gd);
+            /* the group with focus gets a lit edge, or a split is two
+             * identical panes and no way to tell which one types */
+            if (focused) fb_vline(r2.x, r2.y, r2.h, uc_col(UC_C_FOCUS_BORDER));
+        }
+        if (UC.tabs2.h) uc_tabs_group_draw(UC.tabs2, 1);
+    } else
+        uc_edit_draw(UC.editor, uc_doc_active(), UC.focus == UC_F_EDITOR);
     if (UC.panel.h)    uc_panel_draw(UC.panel);
     if (UC.status.h)   uc_status_draw(UC.status);
     uc_notif_draw(UC.canvas);
@@ -331,11 +365,24 @@ static int handle_mouse(const unoui_event *e)
         return 1;
     }
     if (hit(UC.sidebar, e->x, e->y)) return uc_sidebar_event(UC.sidebar, e);
-    if (hit(UC.tabs, e->x, e->y))    return uc_tabs_event(UC.tabs, e);
+    if (hit(UC.tabs, e->x, e->y))    return uc_tabs_group_event(UC.tabs, e, 0);
+    if (hit(UC.tabs2, e->x, e->y))   return uc_tabs_group_event(UC.tabs2, e, 1);
+    if (hit(UC.editor2, e->x, e->y) && !UC.drag) {
+        /* clicking in a group focuses it before the click is delivered, or
+         * the caret lands in the pane you were not looking at (UCD-18) */
+        UcDoc *g2;
+        if (UC.group != 1) uc_group_focus(1);
+        uc_focus(UC_F_EDITOR);
+        g2 = uc_doc_active();
+        return uc_edit_event(UC.editor2, g2, e);
+    }
     if (hit(UC.panel, e->x, e->y))   return uc_panel_event(UC.panel, e);
     if (hit(UC.status, e->x, e->y))  return uc_status_event(UC.status, e);
     if (hit(UC.editor, e->x, e->y) || UC.drag) {
-        if (e->kind == UI_EV_MOUSE_DOWN) uc_focus(UC_F_EDITOR);
+        if (e->kind == UI_EV_MOUSE_DOWN) {
+            if (UC.ngroup > 1 && UC.group != 0) uc_group_focus(0);
+            uc_focus(UC_F_EDITOR);
+        }
         return uc_edit_event(UC.editor, uc_doc_active(), e);
     }
     return 0;
@@ -471,6 +518,8 @@ static void uc_opened(void)
         UC.view = UC_VIEW_EXPLORER;
         UC.panel_tab = UC_PANEL_TERMINAL;
         UC.focus = UC_F_EDITOR;
+        UC.ngroup = 1;                       /* one editor group until split */
+        UC.group = 0;
         UC.ws_vol = uno_fs_pref_vol();
         UC.ws_dir[0] = 0;
 

@@ -565,8 +565,13 @@ void uc_edit_draw(UcRect r, UcDoc *d, int focused)
     draw_minimap(L.minimap, d, d->scroll_line, rows);
     draw_vscroll(L.bar, d, d->scroll_line, rows);
 
-    if (find_on) uc_find_draw(r);
-    if (sug_on)  uc_suggest_draw(r, d);
+    /* The overlays belong to the editor being TYPED IN, not to every editor
+     * on screen.  With two groups (UCD-18) this painted the suggestion list
+     * and the find box into both panes, one of which nobody was typing in. */
+    if (focused) {
+        if (find_on) uc_find_draw(r);
+        if (sug_on)  uc_suggest_draw(r, d);
+    }
 }
 
 /* ---- hit testing --------------------------------------------------------------- */

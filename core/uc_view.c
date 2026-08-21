@@ -971,28 +971,34 @@ int uc_sidebar_key(int key, int mods, int ch)
 /* The strip SCROLLS to keep the active tab on screen.  A tab you cannot see
  * is a tab you cannot close, and the editor you are typing into being the one
  * off the right-hand end is worse than either. */
-static int g_tabfirst;
+static int g_tabfirst[UC_GROUPS];
 
-static void tabs_reveal(UcRect r)
+/* Each GROUP has its own strip, showing only its own editors (UCD-18), so the
+ * index a tab sits at is a position in that group rather than in the global
+ * document list. */
+static void tabs_reveal(UcRect r, int g)
 {
-    int active = uc_doc_active_index();
+    int n = uc_group_count(g), active = -1, i;
     int fit = r.w / TAB_W;
+    for (i = 0; i < n; i++) if (uc_group_doc(g, i) == uc_group_active(g)) active = i;
     if (fit < 1) fit = 1;
-    if (active < g_tabfirst) g_tabfirst = active;
-    if (active >= g_tabfirst + fit) g_tabfirst = active - fit + 1;
-    if (g_tabfirst > uc_doc_count() - fit) g_tabfirst = uc_doc_count() - fit;
-    if (g_tabfirst < 0) g_tabfirst = 0;
+    if (active >= 0 && active < g_tabfirst[g]) g_tabfirst[g] = active;
+    if (active >= g_tabfirst[g] + fit) g_tabfirst[g] = active - fit + 1;
+    if (g_tabfirst[g] > n - fit) g_tabfirst[g] = n - fit;
+    if (g_tabfirst[g] < 0) g_tabfirst[g] = 0;
 }
 
-void uc_tabs_draw(UcRect r)
+void uc_tabs_group_draw(UcRect r, int g)
 {
-    int i, x = r.x, active = uc_doc_active_index();
+    int i, x = r.x, active = uc_group_active(g), n = uc_group_count(g);
     fb_fill_rect(r.x, r.y, r.w, r.h, uc_col(UC_C_TABS_BG));
-    tabs_reveal(r);
-    for (i = g_tabfirst; i < uc_doc_count(); i++) {
-        UcDoc *d = uc_doc_at(i);
-        char t[24];
-        int on = (i == active), w = TAB_W;
+    tabs_reveal(r, g);
+    for (i = g_tabfirst[g]; i < n; i++) {
+        int di = uc_group_doc(g, i);
+        UcDoc *d = uc_doc_at(di);
+        char t[UC_NAME_MAX];
+        int on = (di == active), w = TAB_W;
+        if (!d) continue;
         if (x + w > r.x + r.w) break;
         fb_fill_rect(x, r.y, w, r.h,
                      on ? uc_col(UC_C_TAB_ACTIVE_BG) : uc_col(UC_C_TAB_INACTIVE_BG));
@@ -1019,27 +1025,43 @@ void uc_tabs_draw(UcRect r)
     fb_hline(r.x, r.y + r.h - 1, r.w, uc_col(UC_C_TAB_BORDER));
 }
 
-int uc_tabs_event(UcRect r, const unoui_event *e)
+void uc_tabs_draw(UcRect r) { uc_tabs_group_draw(r, 0); }
+
+int uc_tabs_group_event(UcRect r, const unoui_event *e, int g)
 {
-    int i, x = r.x;
+    int i, x = r.x, n = uc_group_count(g);
     if (e->kind == UI_EV_WHEEL) {
-        g_tabfirst += e->wheel;
-        if (g_tabfirst < 0) g_tabfirst = 0;
-        if (g_tabfirst > uc_doc_count() - 1) g_tabfirst = uc_doc_count() - 1;
+        g_tabfirst[g] += e->wheel;
+        if (g_tabfirst[g] < 0) g_tabfirst[g] = 0;
+        if (g_tabfirst[g] > n - 1) g_tabfirst[g] = n > 0 ? n - 1 : 0;
         return 1;
     }
     if (e->kind != UI_EV_MOUSE_DOWN) return 0;
-    for (i = g_tabfirst; i < uc_doc_count(); i++) {
+    for (i = g_tabfirst[g]; i < n; i++) {
         if (e->x >= x && e->x < x + TAB_W) {
-            UcDoc *d = uc_doc_at(i);
-            if (e->x >= x + TAB_W - 24 && !d->dirty) uc_doc_close(i);
-            else { uc_doc_activate(i); uc_focus(UC_F_EDITOR); }
+            int di = uc_group_doc(g, i);
+            UcDoc *d = uc_doc_at(di);
+            if (!d) return 1;
+            /* Closing a tab closes it IN THIS GROUP.  The same file open in
+             * the other group is a different view of it and stays (UCD-18);
+             * the buffer only goes when no group is showing it. */
+            if (e->x >= x + TAB_W - 24 && !d->dirty) {
+                uc_group_close(g, di);
+                if (!uc_group_shows(di)) uc_doc_close(di);
+            } else {
+                uc_group_focus(g);
+                uc_group_show(g, di);
+                uc_focus(UC_F_EDITOR);
+            }
             return 1;
         }
         x += TAB_W;
     }
     return 1;
 }
+
+int uc_tabs_event(UcRect r, const unoui_event *e)
+{ return uc_tabs_group_event(r, e, 0); }
 
 void uc_breadcrumb_draw(UcRect r)
 {

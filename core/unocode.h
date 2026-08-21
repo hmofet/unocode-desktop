@@ -455,6 +455,27 @@ UcDoc  *uc_doc_at(int i);
 UcDoc  *uc_doc_active(void);
 int     uc_doc_active_index(void);
 void    uc_doc_activate(int i);
+
+/* ---- editor groups (UCD-18) ------------------------------------------------
+ * Two groups side by side, each with its OWN set of open editors, its own
+ * active one, and its own scroll and cursors - so the same file open in both
+ * is two independent views of it, which is half the point of splitting.
+ *
+ * A group's view state lives here rather than in UcDoc because a document has
+ * one buffer and two viewers; the drawing code borrows a group's view for the
+ * length of one paint (uc_group_view_push/pop). */
+#define UC_GROUPS 2
+int  uc_group_count(int g);              /* editors open in group g          */
+int  uc_group_doc(int g, int i);         /* the i-th, as a doc index         */
+int  uc_group_active(int g);             /* its active doc index, or -1      */
+void uc_group_show(int g, int doc);      /* add if absent, then activate     */
+void uc_group_close(int g, int doc);     /* remove from this group only      */
+int  uc_group_shows(int doc);            /* is ANY group still showing it?   */
+void uc_group_split(void);               /* active editor into the other one */
+void uc_group_focus(int g);
+/* borrow group g's saved view for a paint of `d`, then give it back */
+void uc_group_view_push(int g, UcDoc *d);
+void uc_group_view_pop(UcDoc *d);
 int     uc_doc_open(int vol, const char *dir, const char *name); /* index    */
 int     uc_doc_new(void);
 int     uc_doc_close(int i);
@@ -582,6 +603,8 @@ int  uc_sidebar_event(UcRect r, const unoui_event *e);
 int  uc_sidebar_key(int key, int mods, int ch);
 void uc_tabs_draw(UcRect r);
 int  uc_tabs_event(UcRect r, const unoui_event *e);
+void uc_tabs_group_draw(UcRect r, int g);
+int  uc_tabs_group_event(UcRect r, const unoui_event *e, int g);
 void uc_breadcrumb_draw(UcRect r);
 void uc_status_draw(UcRect r);
 int  uc_status_event(UcRect r, const unoui_event *e);
@@ -807,6 +830,10 @@ void uc_launch_run(int i);
 typedef struct {
     UcRect canvas;            /* the whole workbench                        */
     UcRect activity, sidebar, tabs, crumbs, editor, panel, status;
+    /* the second editor group (UCD-18).  ngroup is 1 or 2; group is the one
+     * with focus, and is what uc_doc_active() answers about. */
+    UcRect tabs2, crumbs2, editor2;
+    int    ngroup, group;
     int    sidebar_w, panel_h;
     int    sidebar_user;      /* the user dragged the splitter: stop sizing it */
     int    sidebar_visible, panel_visible, minimap;

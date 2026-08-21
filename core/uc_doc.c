@@ -46,12 +46,230 @@ const char *uc_clip_get(int *n)
 /* ---- document list --------------------------------------------------------- */
 int    uc_doc_count(void) { return g_ndoc; }
 UcDoc *uc_doc_at(int i) { return (i >= 0 && i < g_ndoc) ? &g_doc[i] : 0; }
-int    uc_doc_active_index(void) { return g_ndoc ? g_active : -1; }
-UcDoc *uc_doc_active(void) { return g_ndoc ? &g_doc[g_active] : 0; }
+
+/* ---- editor groups (UCD-18) ------------------------------------------------
+ * A group is a set of open editors, one of them active, plus the VIEW of that
+ * editor: where it is scrolled and where its cursors are.  The view belongs to
+ * the group rather than the document because a document has one buffer and can
+ * have two viewers, and two viewers of one file that shared a scroll position
+ * would not be worth splitting for. */
+typedef struct {
+    int docs[UC_DOC_MAX];
+    int ndoc;
+    int active;                       /* doc index, or -1                    */
+    int scroll_line, scroll_col;
+    UcCursor cur[UC_CURSORS_MAX];
+    int ncur;
+    int has_view;
+} UcGroup;
+
+static UcGroup g_grp[UC_GROUPS];
+static int     g_grp_ready;
+
+static int grp_now(void)
+{
+    int g = (UC.ngroup > 1 && UC.group == 1) ? 1 : 0;
+    if (!g_grp_ready) {
+        /* first use: every document already open belongs to group 0 */
+        int i;
+        g_grp_ready = 1;
+        g_grp[0].ndoc = 0;
+        g_grp[0].active = -1;
+        g_grp[1].ndoc = 0;
+        g_grp[1].active = -1;
+        for (i = 0; i < g_ndoc; i++) g_grp[0].docs[g_grp[0].ndoc++] = i;
+        if (g_ndoc) g_grp[0].active = g_active;
+    }
+    return g;
+}
+
+int uc_group_count(int g)
+{
+    grp_now();
+    return (g >= 0 && g < UC_GROUPS) ? g_grp[g].ndoc : 0;
+}
+
+int uc_group_doc(int g, int i)
+{
+    grp_now();
+    if (g < 0 || g >= UC_GROUPS || i < 0 || i >= g_grp[g].ndoc) return -1;
+    return g_grp[g].docs[i];
+}
+
+int uc_group_active(int g)
+{
+    grp_now();
+    if (g < 0 || g >= UC_GROUPS) return -1;
+    if (g_grp[g].active >= g_ndoc) g_grp[g].active = g_ndoc ? 0 : -1;
+    return g_grp[g].active;
+}
+
+static void grp_capture(int g, UcDoc *d)
+{
+    UcGroup *G;
+    int i;
+    if (!d || g < 0 || g >= UC_GROUPS) return;
+    G = &g_grp[g];
+    G->scroll_line = d->scroll_line;
+    G->scroll_col = d->scroll_col;
+    for (i = 0; i < d->ncur && i < UC_CURSORS_MAX; i++) G->cur[i] = d->cur[i];
+    G->ncur = d->ncur;
+    G->has_view = 1;
+}
+
+static void grp_restore(int g, UcDoc *d)
+{
+    UcGroup *G;
+    int i;
+    if (!d || g < 0 || g >= UC_GROUPS) return;
+    G = &g_grp[g];
+    if (!G->has_view) return;
+    d->scroll_line = G->scroll_line;
+    d->scroll_col = G->scroll_col;
+    for (i = 0; i < G->ncur && i < UC_CURSORS_MAX; i++) d->cur[i] = G->cur[i];
+    d->ncur = G->ncur ? G->ncur : 1;
+}
+
+/* BORROW group g's view for the length of one paint, then give the document
+ * its own back.  This is what lets one file be drawn twice at two scroll
+ * positions: the painter is written against UcDoc and there is one of those,
+ * so the view is swapped in around the call rather than passed to it. */
+static struct { int scroll_line, scroll_col; UcCursor cur[UC_CURSORS_MAX];
+                int ncur, held; } g_borrow;
+
+void uc_group_view_push(int g, UcDoc *d)
+{
+    int i;
+    if (!d || g < 0 || g >= UC_GROUPS || g_borrow.held) return;
+    g_borrow.scroll_line = d->scroll_line;
+    g_borrow.scroll_col = d->scroll_col;
+    for (i = 0; i < d->ncur && i < UC_CURSORS_MAX; i++) g_borrow.cur[i] = d->cur[i];
+    g_borrow.ncur = d->ncur;
+    g_borrow.held = 1;
+    grp_restore(g, d);
+}
+
+void uc_group_view_pop(UcDoc *d)
+{
+    int i;
+    if (!d || !g_borrow.held) return;
+    d->scroll_line = g_borrow.scroll_line;
+    d->scroll_col = g_borrow.scroll_col;
+    for (i = 0; i < g_borrow.ncur && i < UC_CURSORS_MAX; i++) d->cur[i] = g_borrow.cur[i];
+    d->ncur = g_borrow.ncur ? g_borrow.ncur : 1;
+    g_borrow.held = 0;
+}
+
+void uc_group_show(int g, int doc)
+{
+    int i;
+    grp_now();
+    if (g < 0 || g >= UC_GROUPS || doc < 0 || doc >= g_ndoc) return;
+    for (i = 0; i < g_grp[g].ndoc; i++) if (g_grp[g].docs[i] == doc) break;
+    if (i >= g_grp[g].ndoc && g_grp[g].ndoc < UC_DOC_MAX)
+        g_grp[g].docs[g_grp[g].ndoc++] = doc;
+    g_grp[g].active = doc;
+    g_grp[g].has_view = 0;             /* a fresh view of a fresh editor     */
+    if (g == grp_now()) g_active = doc;
+}
+
+void uc_group_close(int g, int doc)
+{
+    int i, k;
+    grp_now();
+    if (g < 0 || g >= UC_GROUPS) return;
+    for (i = 0; i < g_grp[g].ndoc; i++) {
+        if (g_grp[g].docs[i] != doc) continue;
+        for (k = i; k < g_grp[g].ndoc - 1; k++)
+            g_grp[g].docs[k] = g_grp[g].docs[k + 1];
+        g_grp[g].ndoc--;
+        break;
+    }
+    if (g_grp[g].active == doc)
+        g_grp[g].active = g_grp[g].ndoc ? g_grp[g].docs[0] : -1;
+    /* a group with nothing left stops existing, and its space goes back */
+    if (g == 1 && !g_grp[1].ndoc && UC.ngroup > 1) {
+        UC.ngroup = 1;
+        UC.group = 0;
+        uc_layout();
+    }
+}
+
+int uc_group_shows(int doc)
+{
+    int g, i;
+    grp_now();
+    for (g = 0; g < UC_GROUPS; g++)
+        for (i = 0; i < g_grp[g].ndoc; i++)
+            if (g_grp[g].docs[i] == doc) return 1;
+    return 0;
+}
+
+void uc_group_focus(int g)
+{
+    int now = grp_now();
+    UcDoc *d;
+    if (g < 0 || g >= UC_GROUPS || g == now) return;
+    if (g == 1 && UC.ngroup < 2) return;
+    /* the outgoing group keeps the view it was looking at */
+    d = uc_doc_active();
+    if (d) grp_capture(now, d);
+    UC.group = g;
+    if (g_grp[g].active >= 0) g_active = g_grp[g].active;
+    d = uc_doc_active();
+    if (d) grp_restore(g, d);
+    uc_focus(UC_F_EDITOR);
+    uc_repaint();
+}
+
+void uc_group_split(void)
+{
+    int now = grp_now();
+    int doc = g_grp[now].active;
+    int other = now ? 0 : 1;
+    if (doc < 0) return;
+    if (UC.ngroup < 2) UC.ngroup = 2;
+    /* SHOW it in the other group rather than moving it: the same file at two
+     * scroll positions is what a split is usually for, and each group's view
+     * is its own (see UcGroup). */
+    uc_group_show(other, doc);
+    UC.group = other;
+    g_active = doc;
+    /* BOTH groups start from where the editor is right now, and diverge from
+     * there.  Without giving the outgoing group a saved view, it has nothing
+     * to restore when it paints and simply shows the live document - so
+     * scrolling one pane scrolled both, which is the one thing a split is
+     * supposed not to do. */
+    {
+        UcDoc *d = uc_doc_at(doc);
+        if (d) { grp_capture(now, d); grp_capture(other, d); }
+    }
+    uc_layout();
+    uc_focus(UC_F_EDITOR);
+    uc_repaint();
+}
+
+int uc_doc_active_index(void)
+{
+    int g = grp_now();
+    if (!g_ndoc) return -1;
+    if (g_grp[g].active >= 0 && g_grp[g].active < g_ndoc) return g_grp[g].active;
+    return g_active;
+}
+
+UcDoc *uc_doc_active(void)
+{
+    int i = uc_doc_active_index();
+    return (i >= 0) ? &g_doc[i] : 0;
+}
 
 void uc_doc_activate(int i)
 {
-    if (i >= 0 && i < g_ndoc) g_active = i;
+    int g = grp_now();
+    if (i >= 0 && i < g_ndoc) {
+        g_active = i;
+        uc_group_show(g, i);
+    }
 }
 
 int uc_doc_title(UcDoc *d, char *out, int cap)
@@ -1186,7 +1404,7 @@ int uc_doc_new(void)
     d->lang = 0;
     doc_reset(d);
     base_snapshot(d);
-    g_active = i;
+    uc_group_show(grp_now(), i);   /* the group must learn about it too */
     return i;
 }
 
@@ -1222,7 +1440,7 @@ int uc_doc_open(int vol, const char *dir, const char *name)
     for (i = 0; i < g_ndoc; i++)
         if (g_doc[i].vol == vol && !uc_ieq(g_doc[i].name, "") &&
             uc_ieq(g_doc[i].name, name) && !strcmp(g_doc[i].dir, dir ? dir : "")) {
-            g_active = i;
+            uc_group_show(grp_now(), i);
             return i;
         }
     uc_path_join(path, sizeof path, dir, name);
@@ -1262,7 +1480,7 @@ int uc_doc_open(int vol, const char *dir, const char *name)
     uc_doc_detect_indent(d);
     doc_reset(d);
     base_snapshot(d);
-    g_active = i;
+    uc_group_show(grp_now(), i);   /* the group must learn about it too */
     uc_api_fire_open(d);
     return i;
 }
