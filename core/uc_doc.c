@@ -494,6 +494,19 @@ void uc_add_cursor(UcDoc *d, int off)
     cur_norm(d);
 }
 
+/* Add a cursor that already HAS a selection.  Ctrl+D needs this: "add the next
+ * occurrence" means another cursor with that occurrence selected, and a cursor
+ * whose anchor equalled its caret would select nothing (UCD-16). */
+void uc_add_cursor_sel(UcDoc *d, int anchor, int caret)
+{
+    if (!d || d->ncur >= UC_CURSORS_MAX) return;
+    d->cur[d->ncur].anchor = anchor;
+    d->cur[d->ncur].caret = caret;
+    d->cur[d->ncur].goal = uc_col_of(d, caret);
+    d->ncur++;
+    cur_norm(d);
+}
+
 void uc_add_cursor_line(UcDoc *d, int dir)
 {
     int i, line, col, nl;
@@ -911,29 +924,57 @@ void uc_indent(UcDoc *d, int outdent)
     /* Tab with no selection inserts; with a selection it shifts whole lines,
      * which is what makes Shift+Tab mean anything */
     if (!outdent && !uc_has_selection(d)) {
-        char pad[20];
-        int n = 0;
-        if (spaces) {
-            int col = uc_col_of(d, d->cur[0].caret);
-            int k = ts - (col % ts);
-            while (n < k && n < (int)sizeof pad - 1) pad[n++] = ' ';
-        } else pad[n++] = '\t';
-        pad[n] = 0;
-        uc_insert(d, pad, n);
+        /* EACH caret gets its OWN tab stop.  One pad computed from cur[0] and
+         * inserted everywhere put the other carets at the wrong column, which
+         * is exactly the thing multi-cursor exists to get right. */
+        uc_begin_group(d);
+        for (i = d->ncur - 1; i >= 0; i--) {
+            char pad[20];
+            int n = 0;
+            if (spaces) {
+                int col = uc_col_of(d, d->cur[i].caret);
+                int k = ts - (col % ts);
+                while (n < k && n < (int)sizeof pad - 1) pad[n++] = ' ';
+            } else pad[n++] = '\t';
+            pad[n] = 0;
+            uc_replace_range(d, d->cur[i].caret, d->cur[i].caret, pad, n);
+        }
+        uc_end_group(d);
         return;
     }
     uc_begin_group(d);
     {
-        int lo = uc_line_of(d, d->cur[0].anchor < d->cur[0].caret ? d->cur[0].anchor : d->cur[0].caret);
-        int hi = uc_line_of(d, d->cur[d->ncur-1].anchor > d->cur[d->ncur-1].caret
-                               ? d->cur[d->ncur-1].anchor : d->cur[d->ncur-1].caret);
-        for (i = hi; i >= lo; i--) {
-            int s = uc_line_start(d, i);
+        /* The set of lines ANY cursor touches - not the span from the first to
+         * the last.  Two cursors twenty lines apart used to indent everything
+         * between them, which is a lot of file to change by accident. */
+        int lines[UC_CURSORS_MAX * 8], nl = 0, c, k;
+        for (c = 0; c < d->ncur; c++) {
+            int a = d->cur[c].anchor, b = d->cur[c].caret, lo, hi, L;
+            if (a > b) { int t = a; a = b; b = t; }
+            lo = uc_line_of(d, a);
+            hi = uc_line_of(d, b);
+            /* a selection stopping exactly at a line start has not entered
+             * that line, and shifting it would surprise anybody */
+            if (hi > lo && b == uc_line_start(d, hi)) hi--;
+            for (L = lo; L <= hi && nl < (int)(sizeof lines / sizeof lines[0]); L++) {
+                int seen = 0;
+                for (k = 0; k < nl; k++) if (lines[k] == L) { seen = 1; break; }
+                if (!seen) lines[nl++] = L;
+            }
+        }
+        /* descending: an edit on an earlier line moves every later line start */
+        for (i = 1; i < nl; i++) {
+            int t = lines[i];
+            for (k = i - 1; k >= 0 && lines[k] < t; k--) lines[k + 1] = lines[k];
+            lines[k + 1] = t;
+        }
+        for (i = 0; i < nl; i++) {
+            int s = uc_line_start(d, lines[i]);
             if (outdent) {
-                int k = 0;
-                if (s < d->len && d->text[s] == '\t') k = 1;
-                else while (k < ts && s + k < d->len && d->text[s + k] == ' ') k++;
-                if (k) uc_replace_range(d, s, s + k, 0, 0);
+                int n = 0;
+                if (s < d->len && d->text[s] == '\t') n = 1;
+                else while (n < ts && s + n < d->len && d->text[s + n] == ' ') n++;
+                if (n) uc_replace_range(d, s, s + n, 0, 0);
             } else {
                 char pad[20];
                 int n = 0;

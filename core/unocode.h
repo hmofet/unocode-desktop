@@ -489,6 +489,7 @@ void    uc_select_all(UcDoc *d);
 void    uc_select_word(UcDoc *d);
 void    uc_select_line(UcDoc *d);
 void    uc_add_cursor(UcDoc *d, int off);
+void    uc_add_cursor_sel(UcDoc *d, int anchor, int caret);
 void    uc_add_cursor_line(UcDoc *d, int dir);
 void    uc_clear_extra_cursors(UcDoc *d);
 int     uc_has_selection(UcDoc *d);
@@ -814,7 +815,7 @@ typedef struct {
 
 enum { UC_F_EDITOR = 0, UC_F_SIDEBAR, UC_F_PANEL };
 enum { UC_DRAG_NONE = 0, UC_DRAG_SIDEBAR, UC_DRAG_PANEL, UC_DRAG_TEXT,
-       UC_DRAG_MINIMAP, UC_DRAG_VSCROLL };
+       UC_DRAG_MINIMAP, UC_DRAG_VSCROLL, UC_DRAG_BOX };
 
 extern UcWorkbench UC;
 
