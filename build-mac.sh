@@ -64,17 +64,12 @@ if ! lipo -archs "$FW/Versions/A/SDL2" | grep -q arm64 || \
     exit 1
 fi
 
-# ---- sources (identical list to build.sh) ----------------------------------
-UC=$(ls $U/pc64/unocode/uc_*.c)
-UNOUI="$U/unoui/unoui.c $U/unoui/unoui_input.c $U/unoui/unoui_anim.c \
-       $U/unoui/unoui_wmanim.c $U/unoui/themes/theme_unodos.c"
-UNOJS=$(ls $U/unojs/ujs_*.c)
-FB="$U/pc64/fb.c $U/pc64/pc64_font.c"
-HOST="host/main.c host/host_fs.c host/host_shell.c"
-INC="-Ihost/compat -I$U/pc64 -I$U/pc64/unocode -I$U/unoui -I$U/unojs -Ihost"
-DEFS="-DUNO_PC64"
-WARN="-Wall -Wno-unused-parameter -Werror=implicit-function-declaration \
-      -Werror=incompatible-pointer-types"
+# ---- sources ---------------------------------------------------------------
+# sources.sh, shared with build.sh.  This block used to be a COPY of that one,
+# under a comment claiming they were identical; they were not, and the way that
+# surfaced was a wall of undefined symbols from ld, on another machine, long
+# after the Linux and Windows builds had gone green.
+. "$(dirname "$0")/sources.sh"
 
 if [ ! -f "$U/pc64/build/font_data.h" ]; then
     ( cd "$U/ps2" && python3 mkfont_c.py )

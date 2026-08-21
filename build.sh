@@ -18,21 +18,9 @@ CC="${CC:-gcc}"
 PY="${PY:-python3}"
 
 # ---- the compile list ------------------------------------------------------
-# unocode core + its three foundations (unoui, unojs, fb+font), one theme for
-# the window-metrics hook, and the host shim.
-UC=$(ls $U/pc64/unocode/uc_*.c)
-UNOUI="$U/unoui/unoui.c $U/unoui/unoui_input.c $U/unoui/unoui_anim.c \
-       $U/unoui/unoui_wmanim.c $U/unoui/themes/theme_unodos.c"
-UNOJS=$(ls $U/unojs/ujs_*.c)
-FB="$U/pc64/fb.c $U/pc64/pc64_font.c"
-HOST="host/main.c host/host_fs.c host/host_shell.c host/host_clip.c \
-      host/host_win.c host/host_dialog.c host/host_pick_win.c \
-      host/host_pick_unix.c"
-
-INC="-Ihost/compat -I$U/pc64 -I$U/pc64/unocode -I$U/unoui -I$U/unojs -Ihost"
-DEFS="-DUNO_PC64"
-WARN="-Wall -Wno-unused-parameter -Werror=implicit-function-declaration \
-      -Werror=incompatible-pointer-types"
+# In sources.sh, shared with build-mac.sh.  It used to be duplicated here and
+# there; the copies drifted, and the mac build died at the linker.
+. ./sources.sh
 
 # fb.c's 8x8 bitmap font table is generated, not committed
 if [ ! -f "$U/pc64/build/font_data.h" ]; then
