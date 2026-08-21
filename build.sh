@@ -182,6 +182,26 @@ net_test() {
     sh tools/net_test.sh
 }
 
+# uc_http.c's framing (UCD-46): status lines, headers, chunked decoding and
+# SSE assembly, driven ONE BYTE AT A TIME straight into the state machine.
+#
+# There is no local server, and that is a consequence rather than a gap: the
+# seam validates every certificate against the bundled roots with no way to
+# turn it off, so a throwaway server is correctly unreachable.  Framing is pure
+# logic and this tests it harder than a cooperative server could.  The socket
+# path is covered by net_test's live check and by `http_test --live`.
+#
+# It #includes uc_http.c to reach feed(), so uc_http.c must NOT also be on the
+# command line - the seam under test is internal.
+http_test() {
+    mkdir -p build
+    # shellcheck disable=SC2086
+    $CC -O1 -g $WARN $DEFS $INC tools/http_test.c \
+        core/uc_json.c core/uc_util.c host/host_net.c $TLS \
+        -o build/http_test build/bearssl.a -lm
+    ./build/http_test
+}
+
 # The UTF-8 decoder every text road now depends on (UCD-03).
 utf8_test() {
     mkdir -p build
@@ -234,6 +254,6 @@ case "${1:-}" in
     --windows) build_windows ;;
     --test)    core_test; utf8_test; fs_test; clip_test; dialog_test ;;
     --gate)    core_test; build_native; utf8_test; fs_test; clip_test
-               dialog_test; net_test; gate; utf8_gate ;;
+               dialog_test; net_test; http_test; gate; utf8_gate ;;
     *)         build_native ;;
 esac
