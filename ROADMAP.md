@@ -21,16 +21,16 @@ daily driver on Windows, Linux and macOS. What exists:
 - The editor is [benchmarked](BENCHMARK.md) against VS Code and wins on startup,
   memory, process count and disk by large multiples.
 
-**Start with UCD-49.** Tier A was inserted ahead of Tier 1 on 2026-08-21,
-because the assistant is what the product is going to be shown doing. Five of
-it are done: UCD-44 moved the editor into this repository, UCD-45 built the
-network seam, UCD-46 built `core/uc_http.c` on top of it - arbitrary headers,
-incremental chunked decoding and SSE events delivered as they arrive - UCD-47
-took the last blocking step out of a request, and UCD-48 gave the key
-somewhere to live that is not a settings file (`AI: Set API Key` stores
-`anthropic.key` behind `core/uc_secret.h`; UCD-49 reads it from there).
-A real unauthenticated POST to api.anthropic.com returns a 401 whose JSON
-error is read back out, so the whole stack is proved against the real API.
+**Tier A is COMPLETE (UCD-44..51, 2026-08-21). Start with UCD-11.** The
+assistant is what the product is going to be shown doing, and every layer of
+it now exists: the editor lives here (44), the network seam (45), the HTTP +
+SSE client (46), nothing blocking the frame (47), a key that is not in a
+settings file (48), the streaming chat view with proposed-edit diffs (49),
+`vscode.lm` behind a manifest permission (50), and the Assistant extension
+with consent-gated tools (51). Every path is proved against the real
+api.anthropic.com up to the 401 a keyless box earns; the write-run-fix-run
+session on pc64 is the FILMING demo and needs a real key in the store -
+`AI: Set API Key`, then `Assistant: Do a Task`.
 
 **Nothing in a request blocks any more** (UCD-47). Measured on a real request
 to api.anthropic.com: `uc_http_begin()` 0.07 ms, worst poll 8.32 ms, worst
@@ -436,7 +436,9 @@ right.
   `SETTINGS.JSN`, and the storage in use is named on screen.
 
 ### UCD-49: the assistant view
-**Status:** open · **Size:** L · **Depends:** UCD-47
+**Status:** done (a sixth activity-bar view; streams without blocking; an
+applied edit is one undo step, proven by a single Ctrl+Z on disk) ·
+**Size:** L · **Depends:** UCD-47
 
 A native side-bar view and panel: a scrolling transcript, streamed text
 appearing as it arrives, code blocks in the editor's own grammars, and a
@@ -450,7 +452,9 @@ the existing document model already draw.
   code block is syntax-coloured, and an applied edit is one undo step.
 
 ### UCD-50: a model API extensions can call
-**Status:** in progress · **Size:** M · **Depends:** UCD-46, UCD-47
+**Status:** done (refusal names the missing manifest declaration; the
+response streams through onText/onDone/onError - the deviations are in
+UNOCODE.md) · **Size:** M · **Depends:** UCD-46, UCD-47
 
 Expose the client to the extension host in `vscode.lm`'s shape, so the
 assistant is an **extension** rather than a built-in pane and a third-party
@@ -465,7 +469,9 @@ reach the network is an extension host that can exfiltrate a workspace, and
   and `UNOCODE.md` documents the API and its deviations.
 
 ### UCD-51: the assistant extension, with tools
-**Status:** open · **Size:** L · **Depends:** UCD-49, UCD-50
+**Status:** done (line-protocol tools; every write a diff + consent first;
+run absent where pc64_shell_can_run() says 0 - the live pc64 session is the
+filming demo, behind a real key) · **Size:** L · **Depends:** UCD-49, UCD-50
 
 `EXT\ASSIST\`: a CommonJS extension against `vscode` plus UCD-50, with tools
 for read file, write file, list directory, and run. The loop that turns a chat
