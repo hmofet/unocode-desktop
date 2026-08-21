@@ -69,6 +69,11 @@ rediscovers them as bugs:
 
 ## How to use this list
 
+Read [AGENTS.md](AGENTS.md) first: which machine builds what, how to run the
+gate so it cannot lie to you, how to drive the GUI to verify something visual,
+and the two-repo dance an `[UPSTREAM]` task needs.
+
+
 - **Take the lowest unclaimed ID in the highest unfinished tier.** Tiers are
   strictly ordered; within a tier, order is a strong suggestion.
 - **Claim by editing this file** (set `Status: claimed (<agent/date>)`) in its own

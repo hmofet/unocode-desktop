@@ -110,6 +110,17 @@ first rather than by what is interesting to build. Take the lowest unclaimed ID
 in the highest unfinished tier, claim it by editing that file, and make sure
 `./build.sh --gate` is still green when you are done.
 
+[AGENTS.md](AGENTS.md) is how to work in this tree: which machine builds what
+(none of it builds on Windows), how to run the gate so it cannot lie to you,
+how to drive the GUI when the thing you built is visual, what the two-repo
+dance for an upstream change looks like, and the traps that have already cost
+somebody a cycle. Read it before the first build, not after the first surprise.
+
+**Tier 0 is finished.** Long filenames, the system clipboard, UTF-8, HiDPI,
+settings out of the project directory, native Open dialogs, the window title
+and close confirmation, pointer shapes, remembered geometry and smooth
+scrolling all landed on 2026-08-21. UCD-11 is next.
+
 ## Licence
 
 Mozilla Public License 2.0, the same licence as the UnoDOS core it is built
