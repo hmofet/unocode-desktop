@@ -7,22 +7,44 @@ today; a task near the bottom is one they would miss in their second month.
 Each task is sized to **one agent session**. If a task turns out to need more,
 split it and say so here rather than growing it.
 
-## Where things stand (2026-08-20)
+## Where things stand (2026-08-21)
 
-Phase 0 is finished and nothing here has been started yet. What exists:
+**Tier 0 is finished.** UCD-01 through UCD-10 are done; UnoCode Desktop is a
+daily driver on Windows, Linux and macOS. What exists:
 
 - The unmodified core builds and runs on **Windows, Linux and macOS** (the mac
   build is a Universal Binary 2; both slices render byte-identical frames).
-- `./build.sh --gate` renders the workbench headlessly and asserts it painted.
-  That is the check every task below must leave green.
+- `./build.sh --gate` builds, runs four test suites, renders the workbench
+  headlessly and asserts a UTF-8 round trip through a real save. That is the
+  check every task below must leave green. **Check its exit status, not its
+  output**: a grep over the log will happily hide a stage that aborted.
 - The editor is [benchmarked](BENCHMARK.md) against VS Code and wins on startup,
   memory, process count and disk by large multiples.
 
-**Start with UCD-01.** Long filenames are the one defect that makes the editor
-unusable on a real project rather than merely incomplete: files whose names
-exceed 15 characters are withheld from listings entirely, so most repositories
-appear half-empty. Everything else in Tier 0 is a normal missing feature; that
-one is a wall.
+**Start with UCD-11.** Tier 1 is next, and its first task deletes UCD-01's
+alias table by widening the seam properly.
+
+### What Tier 0 turned up
+
+Three things worth knowing before Tier 1 starts, none of them tasks yet:
+
+- **CJK and emoji draw as .notdef boxes.** UTF-8 works end to end - typed,
+  stored, moved through by character, saved byte-exact, and laid out at the
+  right width - but the four bundled faces carry no glyphs for those blocks.
+  Latin-1, Greek, Cyrillic and box drawing all render. This is a
+  font-SHIPPING decision (a CJK face is 5-20 MB, which is most of the "136x
+  smaller on disk" the benchmark claims) and not a code defect. Whoever takes
+  it should decide whether to ship one, subset one, or fall back to a system
+  font.
+- **Three Tier 0 tasks turned out to have upstream halves**, which the
+  original entries did not mark: UCD-03 (the whole document model, column
+  arithmetic and glyph cache), and UCD-06/07/08/09, which need queries only
+  the subsystem can answer. Expect this: "host-side" is a guess until the
+  seam is read.
+- **`--type`, `--keys` and `--save`** now join `--shot` as the gate's hands.
+  A screenshot can say the workbench painted; only typing, moving and saving
+  can say that what went in came back out. Later tasks should use them rather
+  than inventing another harness.
 
 Two known issues that are deliberately **not** yet tasks, recorded so nobody
 rediscovers them as bugs:
@@ -53,13 +75,14 @@ Status values: `open`, `claimed (<who>, <date>)`, `done (<commit>)`.
 
 ---
 
-# Tier 0: it is not a daily driver until these land
+# Tier 0: it is not a daily driver until these land  -  DONE
 
-These are the reasons someone would try UnoCode Desktop for an hour and go back
-to VS Code. Nothing below Tier 0 matters until Tier 0 is finished.
+These were the reasons someone would try UnoCode Desktop for an hour and go
+back to VS Code. All ten landed on 2026-08-21; the entries are kept for the
+reasoning, and each records the commit that closed it.
 
 ### UCD-01: long filenames, via a FAT-style alias table
-**Status:** open · **Size:** M
+**Status:** done (28914dd) · **Size:** M
 
 Today `host_fs.c` withholds any name longer than 15 bytes from listings, because
 the core's listing seam hands out `char[16]` buffers. On a real project most
@@ -78,7 +101,7 @@ removes the truncation properly.
   silently hit.
 
 ### UCD-02: system clipboard
-**Status:** open · **Size:** S
+**Status:** done (c760b22) · **Size:** S
 
 Ctrl+C / Ctrl+X / Ctrl+V move text inside the editor but do not reach the OS
 clipboard, so you cannot paste a URL in or copy a snippet out. This is the most
@@ -92,7 +115,7 @@ frequently used feature in any editor.
   Windows and Linux; multi-line and empty clipboards behave.
 
 ### UCD-03: UTF-8 input and rendering
-**Status:** open · **Size:** M
+**Status:** done (77a4161; upstream af891f91) · **Size:** M
 
 `on_text()` in `main.c` drops every byte >= 0x80, so accented characters, curly
 quotes, box drawing and emoji cannot be typed, and a file containing them may
@@ -109,7 +132,7 @@ already codepoint-based).
   round-trips through a save unchanged, and arrow keys move by character.
 
 ### UCD-04: HiDPI / Retina rendering
-**Status:** open · **Size:** M
+**Status:** done (26ec1e6) · **Size:** M
 
 `SDL_WINDOW_ALLOW_HIGHDPI` is set but the framebuffer is sized in **points**,
 not pixels, so on any Retina or 150%-scaled display the editor is upscaled and
@@ -125,7 +148,7 @@ is rendered at native resolution rather than magnified.
   same physical size as at 1x; dragging between a 1x and a 2x monitor re-lays out.
 
 ### UCD-05: settings live in the user's home, not in their project
-**Status:** open · **Size:** S
+**Status:** done (26ec1e6) · **Size:** S
 
 `uno_fs_pref_vol()` returns volume 0 (the workspace), so `UNOCODE\SETTINGS.JSN`
 is written **into the folder being edited**. That pollutes every repo it touches
@@ -141,7 +164,7 @@ files (`TASKS.JSN`, `LAUNCH.JSN`) where they belong.
   files.
 
 ### UCD-06: open a folder and a file from the GUI
-**Status:** open · **Size:** M
+**Status:** done (26ec1e6; upstream 20eea5dc) · **Size:** M
 
 The folder can only be chosen as a command-line argument. A desktop application
 must have File > Open Folder, File > Open File, and a recent-folders list.
@@ -155,7 +178,7 @@ their own file manager's places and bookmarks.
   explorer without restarting, and the recent list survives a restart.
 
 ### UCD-07: window title, dirty state, and close confirmation
-**Status:** open · **Size:** S
+**Status:** done (26ec1e6; upstream 20eea5dc) · **Size:** S
 
 The title is always "UnoCode": it never names the file or folder, never shows
 the dirty dot, and closing the window discards unsaved work **silently**. That
@@ -166,7 +189,7 @@ last one loses data, which makes this a Tier 0 item rather than a polish one.
   quitting with unsaved editors prompts save / discard / cancel.
 
 ### UCD-08: mouse cursor shapes
-**Status:** open · **Size:** S
+**Status:** done (26ec1e6; upstream 20eea5dc) · **Size:** S
 
 The pointer is an arrow everywhere: over text, over the two splitters, over the
 scrollbar. It reads as a toy immediately, and the splitters look non-draggable.
@@ -177,7 +200,7 @@ scrollbar. It reads as a toy immediately, and the splitters look non-draggable.
   elsewhere, updated as the pointer moves.
 
 ### UCD-09: remember window geometry and the open workspace
-**Status:** open · **Size:** S
+**Status:** done (26ec1e6; upstream 20eea5dc) · **Size:** S
 
 Every launch is a 1280x800 window at the centre of the screen with nothing open.
 
@@ -187,7 +210,7 @@ Every launch is a 1280x800 window at the centre of the screen with nothing open.
   than restored off-screen.
 
 ### UCD-10: smooth and precise scrolling
-**Status:** open · **Size:** S
+**Status:** done (26ec1e6) · **Size:** S
 
 `SDL_MOUSEWHEEL` integer notches are translated 1:1, so trackpad scrolling is
 steppy and fast wheel spins overshoot. Reading code is most of what an editor is
