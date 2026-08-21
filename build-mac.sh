@@ -103,7 +103,7 @@ cp "$U/pc64/fonts/Mono.ttf"       "$R/MONO.TTF"
 cp "$U/pc64/fonts/Ubuntu.ttf"     "$R/UBUNTU.TTF"
 cp "$U/pc64/fonts/ChiKareGo2.ttf" "$R/CHICAGO.TTF"
 rm -rf "$R/EXT" && mkdir -p "$R/EXT"
-cp -r "$U/pc64/unocode/ext/." "$R/EXT/"
+cp -r core/ext/. "$R/EXT/"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

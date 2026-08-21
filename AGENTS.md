@@ -17,6 +17,15 @@ do it here, and records the things that have already cost somebody a cycle.
 ## 1. Where the code is
 
 ```
+core/           the EDITOR. Canonical here; UnoDOS vendors it. See
+                core/README.md before you touch it or the sync.
+  uc_*.c          workbench, document model, editor, terminal, themes,
+                  settings, keybindings, grammars, extension host
+  unocode.h       the private header
+  UNOCODE.md      the contract: formats, the `vscode` subset, the deviations
+  tools/          the core's own tests (JSONC parser, regex engine). Pure
+                  logic, so they run on any build host in a second
+  ext/            the sample extensions - the worked example of the manifest
 host/           the SDL2 + OS shim. This is your code.
   main.c          window, event loop, input translation, HiDPI, headless modes
   host_fs.c       the uno_fs_* seam: volumes, case-insensitive paths, the
@@ -95,10 +104,20 @@ is empty - so it concludes one column fits and scrolls the typed line off to
 the left. The text is in the buffer and in the file, and simply not on screen,
 which reads exactly like a rendering bug. `shot_mode()` paints once first.
 
-## 4. Upstream work (`[UPSTREAM]` tasks, and the ones that turn out to be)
+## 4. Work that crosses into `hmofet/unodos`
 
-`upstream/unodos` is a submodule of `hmofet/unodos`. Changing the core means
-working in two repos, in this order:
+Two different things go by this name now, and they run in opposite directions.
+
+**Outbound - a core change reaching UnoDOS.** This is the common case and it
+needs nothing of you here beyond a green gate: commit to `core/`, and the OS
+picks it up at its next sync (`pc64/tools/sync_unocode.py` there). **A sync is
+gated by pc64's gate, not by ours** - see ง4.1, which is now the reason the
+flip is safe rather than a caveat on it.
+
+**Inbound - an `[UPSTREAM]` task.** Only unoui, unojs and fb changes are these
+now, which is a much smaller set than before the flip: an event loop in unojs,
+a toolkit widget, a rendering fix. Working on one means two repos, in this
+order:
 
 1. In `upstream/unodos`: branch off `master`, rebase onto it first, commit,
    **run its own gate** (ยง4.1), push.

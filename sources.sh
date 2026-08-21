@@ -11,10 +11,13 @@
 # Expects $U to be set to the upstream submodule root.
 # ===========================================================================
 
-# The editor core and its three foundations: unoui (the toolkit), unojs (the
-# extension host's engine), and fb + pc64_font (software rendering).  One theme
-# comes along for the window-metrics hook.
-UC=$(ls "$U"/pc64/unocode/uc_*.c)
+# The editor core lives HERE, in core/, and this repository is its home: see
+# core/README.md.  UnoDOS vendors it, not the other way round.  Its three
+# foundations DO come from the submodule, because they belong to that OS and
+# have many other consumers there: unoui (the toolkit), unojs (the extension
+# host's engine), and fb + pc64_font (software rendering).  One theme comes
+# along for the window-metrics hook.
+UC=$(ls core/uc_*.c)
 UNOUI="$U/unoui/unoui.c $U/unoui/unoui_input.c $U/unoui/unoui_anim.c \
        $U/unoui/unoui_wmanim.c $U/unoui/themes/theme_unodos.c"
 UNOJS=$(ls "$U"/unojs/ujs_*.c)
@@ -29,7 +32,7 @@ HOST="host/main.c host/host_fs.c host/host_shell.c host/host_clip.c \
       host/host_win.c host/host_dialog.c host/host_pick_win.c \
       host/host_pick_unix.c"
 
-INC="-Ihost/compat -I$U/pc64 -I$U/pc64/unocode -I$U/unoui -I$U/unojs -Ihost"
+INC="-Ihost/compat -I$U/pc64 -Icore -I$U/unoui -I$U/unojs -Ihost"
 DEFS="-DUNO_PC64"
 WARN="-Wall -Wno-unused-parameter -Werror=implicit-function-declaration \
       -Werror=incompatible-pointer-types"

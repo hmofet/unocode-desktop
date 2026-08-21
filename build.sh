@@ -1,15 +1,18 @@
 #!/bin/sh
-# UnoCode Desktop build. Compiles the UNMODIFIED editor core out of the pinned
-# upstream/unodos submodule plus the host shim in host/, against SDL2.
+# UnoCode Desktop build. Compiles the editor core in core/ - which this repo is
+# the home of - plus the host shim in host/, against SDL2.  The core's three
+# foundations (unoui, unojs, fb) still come from the pinned upstream/unodos
+# submodule, which is consumed read-only.
 #
 #   ./build.sh              native build           -> build/unocode
-#   ./build.sh --gate       native build + the headless render gate
+#   ./build.sh --gate       core tests + native build + the headless render gate
 #   ./build.sh --windows    mingw cross build      -> build/win/unocode.exe
 #                           (SDL2_MINGW points at an extracted SDL2-devel-
 #                            x.y.z-mingw tree; default /work/unodesk/SDL2-2.30.9)
 #
-# The core is consumed read-only; if this script ever needs to patch a file
-# under upstream/, the port has failed and the fix is an upstream request.
+# upstream/ is consumed read-only; if this script ever needs to patch a file
+# under it, the change belongs in hmofet/unodos as a commit there (AGENTS.md
+# section 4).  core/ is ours and is edited normally.
 set -e
 cd "$(dirname "$0")"
 
@@ -41,7 +44,7 @@ stage_res() {
     cp "$U/pc64/fonts/ChiKareGo2.ttf" "$out/CHICAGO.TTF"
     rm -rf "$out/EXT"
     mkdir -p "$out/EXT"
-    cp -r "$U/pc64/unocode/ext/." "$out/EXT/"
+    cp -r core/ext/. "$out/EXT/"
 }
 
 # ---- native ----------------------------------------------------------------
@@ -136,6 +139,14 @@ dialog_test() {
     ./build/dialog_test build/dlg_ws
 }
 
+# The CORE's own tests: the JSONC parser and the regex engine, which every
+# theme, keybinding, snippet, manifest and grammar in the product is read by.
+# They live in core/tools because the core is canonical here (core/README.md),
+# and they run FIRST because a broken parser is not worth linking a binary for.
+core_test() {
+    sh core/tools/test.sh
+}
+
 # The UTF-8 decoder every text road now depends on (UCD-03).
 utf8_test() {
     mkdir -p build
@@ -186,8 +197,8 @@ EOF
 
 case "${1:-}" in
     --windows) build_windows ;;
-    --test)    utf8_test; fs_test; clip_test; dialog_test ;;
-    --gate)    build_native; utf8_test; fs_test; clip_test; dialog_test
-               gate; utf8_gate ;;
+    --test)    core_test; utf8_test; fs_test; clip_test; dialog_test ;;
+    --gate)    core_test; build_native; utf8_test; fs_test; clip_test
+               dialog_test; gate; utf8_gate ;;
     *)         build_native ;;
 esac

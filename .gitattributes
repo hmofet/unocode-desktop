@@ -8,6 +8,13 @@
 *.py    text eol=lf
 *.md    text eol=lf
 
+# The sample extensions and everything else the core reads as JSONC. They are
+# vendored into UnoDOS by its sync_unocode.py, which normalises anyway - but a
+# file that is LF in one repo and CRLF in the other makes every sync look like
+# a change to all of them.
+*.JS    text eol=lf
+*.JSN   text eol=lf
+
 # PowerShell is the Windows side of the harness; leave it CRLF.
 *.ps1   text eol=crlf
 
