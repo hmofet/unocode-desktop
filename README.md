@@ -9,12 +9,15 @@ themes, keybindings, snippets, TextMate grammars and extension manifests as they
 are written, because those file formats are the compatibility surface it was
 designed around.
 
-The editor is not new. It is [UnoCode](https://github.com/hmofet/unodos), the
-workbench from UnoDOS, an operating system that boots on bare-metal PCs and on a
-PlayStation 2 and a Dreamcast. **This repository is the ~900 lines that let the
-same C run on Windows, macOS and Linux.** The core is consumed from a pinned
-submodule, unmodified: the translation units compiled here are byte-for-byte the
-ones that boot on a machine with no operating system under them.
+The editor is not new. It is UnoCode, the workbench from
+[UnoDOS](https://github.com/hmofet/unodos), an operating system that boots on
+bare-metal PCs and on a PlayStation 2 and a Dreamcast. It started life there and
+**this repository is now its home**: the editor is `core/`, and UnoDOS vendors
+it back. The translation units compiled here are byte-for-byte the ones that
+boot on a machine with no operating system under them.
+
+Around it sits **the ~1,500 lines that let that same C run on Windows, macOS and
+Linux** - a filesystem, a clock, a clipboard, five shell hooks and a window.
 
 ```
                                    UnoCode Desktop      VS Code
@@ -78,17 +81,26 @@ system. Here they are provided by `host/`, on top of SDL2 and whatever OS you
 are on. That is the whole port.
 
 ```
+core/              the editor. Canonical here; UnoDOS vendors it
 host/main.c        SDL2 window, the two input roads, the frame loop
 host/host_fs.c     the filesystem seam, speaking FAT's dialect over a real OS
 host/host_shell.c  the five shell hooks and the clock
 host/compat/       headers that shadow upstream where a hosted build must differ
-upstream/unodos    the pinned submodule: consumed, never patched
+upstream/unodos    the pinned submodule: unoui, unojs and fb. Never patched
 ```
 
-The submodule is [hmofet/unodos](https://github.com/hmofet/unodos), also MPL-2.0,
-pinned to an exact commit so a clone builds the core this host was tested
-against rather than whatever happens to be on its main branch today. Moving to a
-newer core is a deliberate act: bump the submodule, re-run the gate, commit.
+`core/` builds from here. What comes out of the submodule is narrower: unoui
+(the widget toolkit), unojs (the extension host's JavaScript engine) and the
+software renderer. Those belong to the operating system and have many other
+consumers there - its shell, its applications, its browser, its Dreamcast port -
+so they are consumed and never patched, pinned to an exact commit so a clone
+builds what this host was tested against. Changing one is a commit in
+[hmofet/unodos](https://github.com/hmofet/unodos), also MPL-2.0, then a
+deliberate bump here: re-run the gate, commit.
+
+The dependency runs both ways and that is safe for one reason: **nothing is
+canonical in both places.** Each repository is the sole author of what it sends
+the other. See [core/README.md](core/README.md).
 
 Two decisions carry most of the design. The editor runs in unoui's **fullscreen
 canvas** mode, so there is no simulated desktop inside the window and the OS
@@ -97,10 +109,13 @@ showing one. And the filesystem shim resolves paths **case-insensitively**,
 because the core upper-cases everything the way FAT does, and ext4 does not.
 
 The rule that keeps the port honest is that **nothing under `upstream/` is ever
-edited here**. When the port needs something from the core, that is a request
-filed against the UnoDOS repository under its own process, and those tasks are
-marked `[UPSTREAM]` in the roadmap. It is why the same source still boots on a
-Dreamcast.
+edited here**, and its corollary that a change to `core/` has to survive a boot
+on hardware. When the port needs something from the toolkit or the JavaScript
+engine, that is a change filed against the UnoDOS repository under its own
+process, marked `[UPSTREAM]` in the roadmap. And a change to the editor is
+gated over there before it is called done, because the build here compiles the
+editor and its foundations but never a kernel. It is why the same source still
+boots on a Dreamcast.
 
 ## Contributing, or picking this up
 
