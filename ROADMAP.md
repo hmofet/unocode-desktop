@@ -21,8 +21,15 @@ daily driver on Windows, Linux and macOS. What exists:
 - The editor is [benchmarked](BENCHMARK.md) against VS Code and wins on startup,
   memory, process count and disk by large multiples.
 
-**Start with UCD-11.** Tier 1 is next, and its first task deletes UCD-01's
-alias table by widening the seam properly.
+**Start with UCD-45.** Tier A was inserted ahead of Tier 1 on 2026-08-21: the
+assistant is what the product is going to be shown doing, and UCD-44 has
+already moved the editor into this repository so that work happens in one place
+instead of two. UCD-11 waits - it buys long filenames on the desktop and
+nothing at all on the device.
+
+**The editor now lives here.** `core/` is canonical and UnoDOS vendors it;
+`upstream/` is still pinned and read-only but is down to unoui, unojs and fb.
+Read [core/README.md](core/README.md) before touching either side of that.
 
 ### What Tier 0 turned up
 
@@ -80,9 +87,10 @@ and the two-repo dance an `[UPSTREAM]` task needs.
   commit, before you start.
 - **`[UPSTREAM]` tasks do not belong to this repo.** Nothing under `upstream/`
   is ever patched here. They are changes to `hmofet/unodos`, filed and landed
-  under that repo's `AGENTS.md` process (unocode is its own registry lane), then
-  consumed here by bumping the submodule. Doing one of these means working in
-  two repos, in that order.
+  under that repo's `AGENTS.md` process, then consumed here by bumping the
+  submodule. Doing one of these means working in two repos, in that order.
+  **Since UCD-44 this is a much smaller set**: the editor itself is `core/` and
+  ours, so only unoui, unojs and fb changes are `[UPSTREAM]` now.
 - **Done means the gate is green**: `./build.sh --gate` still renders a
   workbench, and whatever check the task names below passes too.
 
@@ -234,6 +242,180 @@ used for.
 - **Where:** `host/main.c` (prefer `preciseY`, accumulate sub-notch deltas).
 - **Done when:** two-finger scrolling on a trackpad is continuous, and a fast
   wheel does not jump pages.
+
+---
+
+# Tier A: the assistant  -  jumped the queue
+
+This tier was inserted on 2026-08-21, ahead of Tier 1, because writing software
+inside UnoDOS with an assistant is the thing the product is going to be shown
+doing. Nothing in Tier 1 blocks it, and UCD-11 in particular buys long
+filenames on the desktop and buys nothing on the device, where FAT is 8.3
+regardless.
+
+### What already exists, and changes the size of this work
+
+**UnoDOS Studio already ships a working HTTPS chat client that talks to
+api.anthropic.com**, and it is built entirely from kernel exports:
+`pc64_net_up` + `net_dns_query` + `tls_connect_ca` + `tls_write`/`tls_read`,
+with a hand-written HTTP/1.1 POST and a JSON extractor
+(`upstream/unodos/pc64/apps/studio_ai.c`, `studio_json.c`, ~760 lines together).
+It supports three providers, keeps keys in `AI.CFG`, attaches the current file,
+pastes a code block at the caret, and has an **offline fake-provider test
+server** at `pc64/tls_test/ai_server.py` that gates the whole transport with no
+key and no internet.
+
+So the transport question is answered and the answer is not `pc64_http.c`. Read
+`studio_ai.c` before starting UCD-45; most of these tasks are lifting proven
+code into the core and widening it, not writing a client from scratch.
+
+Four things Studio's client does **not** do, which is most of what is left:
+
+- It **blocks**. The request is issued in one frame after a "thinking..."
+  repaint, and a big response stalls the UI. v1 accepted that; an editor
+  cannot.
+- It sends **only the latest user message**. The conversation buffer exists and
+  is drawn, but `build_request()` puts one user turn in the body, so the model
+  has no history.
+- It has **no tool use**, so it can write code into a reply but cannot read a
+  file, write one, or run what it wrote. That is the whole difference between a
+  chat pane and an assistant.
+- It is a **built-in pane**, not an extension, so nothing about it is VS Code
+  compatible and no third-party extension can reach the model.
+
+Also worth knowing before you copy anything out of it: its default model string
+is `claude-sonnet-4-5`, which is two families stale. The current ids are
+`claude-opus-5`, `claude-sonnet-5`, `claude-fable-5` and `claude-haiku-4-5`.
+
+### UCD-44: `[DONE]` the core moves here, and this repo becomes its home
+**Status:** done · **Size:** M
+
+The editor was developed in `hmofet/unodos` and consumed here read-only. That is
+now the other way round: `core/` is canonical, UnoDOS vendors it. See
+[core/README.md](core/README.md), and `pc64/UNOCODE-UPSTREAM.md` +
+`pc64/tools/sync_unocode.py` in that repo.
+
+`unoui`, `unojs` and `fb` stay upstream and are still consumed read-only, so
+nothing is canonical in both places.
+
+- **Done when:** `./build.sh --gate` is green building from `core/`, the sync
+  reproduces `pc64/unocode/` byte for byte with its banners, and pc64's own
+  gate is green on the vendored copy.
+
+### UCD-45: one net + TLS seam, implemented by both platforms
+**Status:** open · **Size:** M
+
+Declare the seam the core will reach the network through - link up, resolve,
+CA-validated connect, read, write, close, plus an entropy-source query - as
+`core/uc_net.h`. On pc64 it is a thin shim over the kernel exports Studio
+already uses. On the desktop it is new: `host/host_net.c`, over BearSSL (which
+upstream already vendors at `pc64/bearssl`, MIT) and platform sockets.
+
+Keep it a **socket** seam, not a request seam. `pc64_http.c` is the browser's
+client, owned by the browser lane, and its POST is form-encoded with no way to
+set a header - which is why Studio went around it rather than through it.
+
+- **Done when:** the same core code reaches api.anthropic.com from pc64 and
+  from all three desktop targets; certificate validation is not disableable
+  from a config file on any of them; and the fake provider in
+  `upstream/unodos/pc64/tls_test/ai_server.py` serves the desktop build too.
+
+### UCD-46: an HTTP + JSON client in the core
+**Status:** open · **Size:** M · **Depends:** UCD-45
+
+Lift `studio_ai.c`'s request construction and `studio_json.c`'s extractor into
+`core/uc_http.c`, against `uc_json.c` (which already parses JSONC and is
+already gated by `core/tools/test.sh`). Then widen it past what Studio needed:
+arbitrary headers, a body of any size, multi-turn message history, and
+**incremental SSE decode** so a stream can be delivered as it arrives.
+
+Streaming is the part with no precedent to copy. Studio de-chunks in place
+after the whole response has landed; an SSE stream is chunked *and* still
+arriving, so the decoder has to hand out events mid-transfer.
+
+- **Done when:** a POST with custom headers and a 100 KB body round-trips, an
+  SSE stream is delivered event by event rather than at the end, and both are
+  gated offline against `ai_server.py` with no key and no internet.
+
+### UCD-47: the request must not stop the frame
+**Status:** open · **Size:** M · **Depends:** UCD-46
+
+Studio's `do_request()` runs to completion inside one frame. Drive the exchange
+from the frame loop instead, as a state machine the host pumps, so the editor
+stays live while a generation runs.
+
+This is deliberately **not** UCD-21. A real event loop in unojs is still wanted
+and still Tier 2; what this task needs is narrower, and the existing thenable
+plus a pump between frames carries it.
+
+- **Done when:** a 20-second generation leaves the workbench scrolling, typing
+  and repainting; the request can be cancelled; and closing the view or the
+  window mid-flight tears the connection down instead of leaking it.
+
+### UCD-48: `SecretStorage`, and a key that is not sitting in a settings file
+**Status:** open · **Size:** S
+
+Studio keeps API keys in `AI.CFG` in plaintext and says so. Offer VS Code's
+`SecretStorage` shape, backed by DPAPI on Windows and the Keychain on macOS.
+
+On Linux and on pc64 there may be nothing better than a file with tight
+permissions - in which case **say that in the UI** rather than implying a
+secret store that is not there. An honest plaintext caveat is what Studio did
+right.
+
+- **Done when:** a key set in the UI survives a restart, never appears in
+  `SETTINGS.JSN`, and the storage in use is named on screen.
+
+### UCD-49: the assistant view
+**Status:** open · **Size:** L · **Depends:** UCD-47
+
+A native side-bar view and panel: a scrolling transcript, streamed text
+appearing as it arrives, code blocks in the editor's own grammars, and a
+proposed edit shown as a diff you can apply or reject.
+
+Native because **webviews are out of scope and staying out of scope** - the
+whole value here is not shipping a browser. Everything this needs, unoui and
+the existing document model already draw.
+
+- **Done when:** a generation streams into the transcript without stutter, a
+  code block is syntax-coloured, and an applied edit is one undo step.
+
+### UCD-50: a model API extensions can call
+**Status:** open · **Size:** M · **Depends:** UCD-46, UCD-47
+
+Expose the client to the extension host in `vscode.lm`'s shape, so the
+assistant is an **extension** rather than a built-in pane and a third-party
+extension can use the model too.
+
+Gate it on a permission declared in `PACKAGE.JSN`. An extension host that can
+reach the network is an extension host that can exfiltrate a workspace, and
+`EXT\` is a folder anyone can drop a file into.
+
+- **Done when:** an extension sends a prompt and receives a stream, an
+  extension without the permission is refused with a message that says why,
+  and `UNOCODE.md` documents the API and its deviations.
+
+### UCD-51: the assistant extension, with tools
+**Status:** open · **Size:** L · **Depends:** UCD-49, UCD-50
+
+`EXT\ASSIST\`: a CommonJS extension against `vscode` plus UCD-50, with tools
+for read file, write file, list directory, and run. The loop that turns a chat
+pane into something that writes software.
+
+Studio's system prompt is a good starting point and is already correct about
+this platform - UnoC's subset, `uno_app_main`, the Python `uno.App` shape, the
+`Canvas` methods. Take it and add the tools.
+
+**Run** is where the two platforms differ, and the device is the easier one:
+`pc64_shell_run_user()` already launches a Python app, and the terminal already
+calls it, so an edit-run-read-output loop works on UnoDOS today. On the desktop
+the same call is an honest refusal until **UCD-14** lands, so ship the desktop
+build with the run tool absent rather than present and broken - offer only what
+the platform can do.
+
+- **Done when:** on pc64, the assistant writes a Python app, runs it, reads the
+  failure, fixes it and runs it again, with each file write shown as a diff
+  first; and on the desktop the same session works with the run tool absent.
 
 ---
 
