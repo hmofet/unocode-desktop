@@ -540,7 +540,7 @@ enum { UC_CI_TEXT = 0, UC_CI_METHOD, UC_CI_FUNCTION, UC_CI_VARIABLE,
  * uc_view.c - the workbench chrome outside the editor.
  * ======================================================================== */
 enum { UC_VIEW_EXPLORER = 0, UC_VIEW_SEARCH, UC_VIEW_SCM, UC_VIEW_RUN,
-       UC_VIEW_EXTENSIONS, UC_VIEW_N };
+       UC_VIEW_EXTENSIONS, UC_VIEW_ASSIST, UC_VIEW_N };
 enum { UC_PANEL_PROBLEMS = 0, UC_PANEL_OUTPUT, UC_PANEL_TERMINAL,
        UC_PANEL_N };
 
@@ -583,6 +583,20 @@ void uc_output_show(int ch);
 
 /* transient notifications (bottom-right toasts) */
 void uc_notify(const char *msg, int sev);
+
+/* ======================================================================== *
+ * uc_ai.c - the assistant view (UCD-49): a native chat over uc_http.h.
+ * The exchange is pumped from uc_ai_tick() each frame and never blocks;
+ * the key comes from uc_secret.h at send time and is not kept.
+ * ======================================================================== */
+void uc_ai_draw(UcRect r);
+int  uc_ai_event(UcRect r, const unoui_event *e);
+int  uc_ai_key(int key, int mods, int ch);
+void uc_ai_tick(void);               /* pump the in-flight request           */
+void uc_ai_abort(void);              /* cancel it (window close, Esc)        */
+void uc_ai_clear(void);              /* new conversation                     */
+void uc_ai_open(void);               /* show + focus the view                */
+int  uc_ai_busy(void);
 
 /* ======================================================================== *
  * uc_cmd.c - commands, keybindings, the palette and quick open.

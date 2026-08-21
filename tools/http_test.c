@@ -242,6 +242,35 @@ static void t_sse(void)
     uc_http_free(h);
 }
 
+/* An error reply is a BODY, not a stream (UCD-49).  A streaming caller still
+ * gets the server's explanation: a 401's JSON is one line matching no SSE
+ * field, and feeding it to the line assembler would silently delete the whole
+ * reason the request failed. */
+static void t_sse_error(void)
+{
+    static const char R[] =
+        "HTTP/1.1 401 Unauthorized\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: 47\r\n"
+        "\r\n"
+        "{\"type\":\"error\",\"error\":{\"message\":\"bad key\"}}\n";
+    uc_http *h = paper();
+    int len = 0, i;
+    const char *body;
+
+    puts("5b. an error reply survives a streaming request");
+    g_n = 0;
+    h->sse = on_event;
+    for (i = 0; i < (int)sizeof R - 1; i++)
+        if (!feed(h, R[i])) break;
+    ok(h->state == S_DONE, "the 401 completed at its Content-Length");
+    ok(g_n == 0, "no SSE event was invented from the JSON");
+    body = uc_http_body(h, &len);
+    ok(body && strstr(body, "bad key") != 0,
+       "the server's explanation is in the body, readable");
+    uc_http_free(h);
+}
+
 /* ---- the request we build ------------------------------------------------- */
 
 static void t_request(void)
@@ -486,6 +515,7 @@ int main(int argc, char **argv)
     t_chunked();
     t_chunked_byte_at_a_time();
     t_sse();
+    t_sse_error();
     t_request();
 
     printf("\n%s: %d failure(s)\n", fails ? "FAILED" : "PASSED", fails);
