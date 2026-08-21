@@ -30,7 +30,7 @@ FB="$U/pc64/fb.c $U/pc64/pc64_font.c"
 # disagree, which is exactly the bug this file exists to prevent.
 HOST="host/main.c host/host_fs.c host/host_shell.c host/host_clip.c \
       host/host_win.c host/host_dialog.c host/host_pick_win.c \
-      host/host_pick_unix.c host/host_net.c"
+      host/host_pick_unix.c host/host_net.c host/host_secret.c"
 
 # TLS.  BearSSL comes out of the submodule and so does the trust store, which
 # is the point: tls_ca.c is generated, self-contained and includes only

@@ -96,7 +96,7 @@ build_windows() {
         $HOST $UC $UNOUI $UNOJS $FB $TLS \
         -o build/win/unocode.exe build/bearssl-win.a \
         -L"$T/lib" -lmingw32 -lSDL2main -lSDL2 -mwindows -lm -lole32 -luuid \
-        -lws2_32 -lbcrypt
+        -lws2_32 -lbcrypt -lcrypt32
     cp "$T/../x86_64-w64-mingw32/bin/SDL2.dll" build/win/ 2>/dev/null || \
         cp "$T/bin/SDL2.dll" build/win/
     stage_res build/win/res
@@ -202,6 +202,18 @@ http_test() {
     ./build/http_test
 }
 
+# uc_secret.h against the real platform store (UCD-48).  On this build host
+# that is the 0600 file; the test asserts the MODE, because "only this user
+# can read it" is permission bits and permission bits are checkable.
+secret_test() {
+    mkdir -p build
+    rm -rf build/secret_ws && mkdir -p build/secret_ws
+    # shellcheck disable=SC2086
+    $CC -O1 -g $WARN -Icore -Ihost tools/secret_test.c host/host_secret.c \
+        -o build/secret_test
+    ./build/secret_test build/secret_ws
+}
+
 # The UTF-8 decoder every text road now depends on (UCD-03).
 utf8_test() {
     mkdir -p build
@@ -252,8 +264,9 @@ EOF
 
 case "${1:-}" in
     --windows) build_windows ;;
-    --test)    core_test; utf8_test; fs_test; clip_test; dialog_test ;;
+    --test)    core_test; utf8_test; fs_test; clip_test; dialog_test
+               secret_test ;;
     --gate)    core_test; build_native; utf8_test; fs_test; clip_test
-               dialog_test; net_test; http_test; gate; utf8_gate ;;
+               dialog_test; secret_test; net_test; http_test; gate; utf8_gate ;;
     *)         build_native ;;
 esac

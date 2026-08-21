@@ -81,6 +81,8 @@ typedef struct {
 
 struct SDL_Window;
 void host_state_dir(const char *home);            /* where WINDOW.STA lives  */
+void host_secret_dir(const char *home);           /* where SECRETS.DAT lives
+                                                     (host_secret.c, UCD-48) */
 void host_title_update(struct SDL_Window *win);   /* file - folder, + dirty  */
 void host_cursors_init(void);
 void host_cursor_update(int x, int y);            /* canvas pixels           */

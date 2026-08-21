@@ -129,6 +129,7 @@ static void setup_volumes(const char *workdir)
         vol = host_fs_add_volume("HOME", home, 1);
         if (vol >= 0) host_fs_set_pref_vol(vol);
         host_state_dir(home);
+        host_secret_dir(home);
         host_recent_file(home);
         host_recent_load();
     }

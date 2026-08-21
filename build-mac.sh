@@ -103,6 +103,7 @@ clang -O2 -g -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 \
       -o "$APP/Contents/MacOS/UnoCode" \
       -F"$SDL_DIR" -framework SDL2 \
       -framework AppKit -framework Foundation -lobjc \
+      -framework Security -framework CoreFoundation \
       -Wl,-rpath,@executable_path/../Frameworks -lm $NETLIBS
 
 cp -R "$FW" "$APP/Contents/Frameworks/"
