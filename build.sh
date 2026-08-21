@@ -135,9 +135,57 @@ clip_test() {
     fi
 }
 
+# The UTF-8 decoder every text road now depends on (UCD-03).
+utf8_test() {
+    mkdir -p build
+    # shellcheck disable=SC2086
+    $CC -O1 -g $WARN -I$U/pc64 tools/utf8_test.c -o build/utf8_test
+    ./build/utf8_test
+}
+
+# ---- the UTF-8 round trip --------------------------------------------------
+# The one claim a screenshot cannot check: that what was typed reached the
+# buffer and that saving put those same bytes back on disk.  --type and --save
+# are the headless hands that make it checkable.
+utf8_gate() {
+    rm -rf build/u8 && mkdir -p build/u8/ws
+    printf 'first line\n' > build/u8/ws/MIXED.TXT
+    ( cd build/u8/ws && ../../../build/unocode \
+        --open MIXED.TXT --type 'café 中文 🙂 ──' \
+        --save --shot ../mixed.ppm . ) >/dev/null
+    $PY - build/u8/ws/MIXED.TXT <<'EOF'
+import sys
+want = "café 中文 \U0001f642 ──"
+raw = open(sys.argv[1], 'rb').read()
+text = raw.decode('utf-8')                      # 1. it is valid UTF-8 at all
+assert want in text, "typed text is not in the saved file: %r" % text
+assert raw == text.encode('utf-8'), "bytes are not their own re-encoding"
+print("utf8: typed %d characters (%d bytes), saved and re-read byte-exact"
+      % (len(want), len(want.encode('utf-8'))))
+EOF
+
+    # And the half typing cannot reach: that a caret STEP is a character.
+    # Type a line, walk Left over b, the emoji and the CJK glyph, then
+    # Backspace.  Byte-stepping would leave a severed sequence behind, which
+    # the decode() below refuses - the assertion is a decoder, not an eyeball.
+    rm -rf build/u8/mv && mkdir -p build/u8/mv
+    printf 'x\n' > build/u8/mv/MOVE.TXT
+    ( cd build/u8/mv && ../../../build/unocode --open MOVE.TXT \
+        --type 'aé中🙂b' --keys 'LLLB' --save --shot ../mv.ppm . ) >/dev/null
+    $PY - build/u8/mv/MOVE.TXT <<'EOF'
+import sys
+raw = open(sys.argv[1], 'rb').read()
+text = raw.decode('utf-8')            # a severed sequence dies right here
+assert text.startswith('a中🙂bx'), \
+    "Left x3 + Backspace removed the wrong thing: %r" % text
+print("utf8: Left x3 then Backspace removed ONE whole character (%r)"
+      % text.rstrip())
+EOF
+}
+
 case "${1:-}" in
     --windows) build_windows ;;
-    --test)    fs_test; clip_test ;;
-    --gate)    build_native; fs_test; clip_test; gate ;;
+    --test)    utf8_test; fs_test; clip_test ;;
+    --gate)    build_native; utf8_test; fs_test; clip_test; gate; utf8_gate ;;
     *)         build_native ;;
 esac

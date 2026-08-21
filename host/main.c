@@ -23,6 +23,13 @@
  *   unocode --open <file>      also open that file in an editor tab
  *   unocode --shot <out.ppm>   headless: render the workbench, write a PPM,
  *                              exit - the CI eye that needs no display
+ *   unocode --type <text>      headless: feed <text> in as typing first
+ *   unocode --keys <LRUDHEBX>  headless: navigation keys, after --type
+ *   unocode --save             headless: save the active editor after --type
+ *
+ * The last two are the gate's hands, as --shot is its eyes: a screenshot can
+ * say the workbench painted, but only typing and saving can say that what
+ * went in came back out of the file byte for byte.
  * ======================================================================== */
 #include <SDL.h>
 #include <stdio.h>
@@ -34,6 +41,7 @@
 #include "unoui.h"
 #include "unoui_theme.h"
 #include "uno_uuiapp.h"
+#include "uno_utf8.h"
 #include "host.h"
 
 /* the runtime desktop size fb.h expects the platform to own (UNO_PC64) */
@@ -51,7 +59,16 @@ extern const UnoUuiApp *uno_app_main(void *reserved);
 extern const struct unoui_theme *pc64_shell_theme(void);   /* host_shell.c */
 extern int uc_doc_open(int vol, const char *dir, const char *name);
 
+/* UcDoc is an anonymous struct in unocode.h, which is subsystem-internal and
+ * this host may not include, so the handle travels as void * - it is only ever
+ * handed straight back to the core that made it. */
+extern void *uc_doc_active(void);
+extern int   uc_doc_save(void *d);
+
 static const char *g_open_file;    /* --open, resolved after the app is up */
+static const char *g_type_text;    /* --type, fed in as character events   */
+static const char *g_keys;         /* --keys, navigation keys after --type */
+static int         g_do_save;      /* --save, after --type                 */
 
 unsigned long host_ms(void) { return (unsigned long)SDL_GetTicks64(); }
 
@@ -184,17 +201,24 @@ static void on_key_down(const SDL_KeyboardEvent *ke)
     }
 }
 
+/* SDL_TEXTINPUT delivers UTF-8; the canvas road's e.ch is a CODEPOINT, so
+ * decode rather than walking bytes.  Phase 0 dropped every byte >= 0x80, which
+ * made the editor unusable outside ASCII - an accented letter, a curly quote
+ * and a box-drawing character were all simply unavailable. */
 static void on_text(const char *text)
 {
     unoui_event e;
-    const unsigned char *p;
+    const char *p = text;
+    int left = (int)strlen(text);
     SDL_Keymod m = SDL_GetModState();
     if (m & (KMOD_CTRL | KMOD_ALT)) return;      /* chords are not typing */
-    for (p = (const unsigned char *)text; *p; p++) {
-        if (*p >= 0x80) continue;                /* ASCII core for phase 0 */
+    while (left > 0) {
+        int cp, n = uno_u8_get(p, left, &cp);
+        if (n <= 0) break;
+        p += n; left -= n;
         memset(&e, 0, sizeof e);
         e.kind = UI_EV_CHAR;
-        e.ch   = *p;
+        e.ch   = cp;
         e.mods = ui_mods(m);
         feed(&e);
     }
@@ -246,6 +270,55 @@ static void boot_app(void)
     }
 }
 
+/* --type: feed UTF-8 text in as canvas character events, exactly as
+ * SDL_TEXTINPUT would.  This is the headless half of the input road, and it
+ * exists so the gate can assert things a screenshot cannot: that what was
+ * typed is what reached the buffer, and that saving put those same bytes back
+ * on disk.  Without it "UTF-8 round-trips" is a claim, not a check. */
+static void type_text(const char *text)
+{
+    unoui_event e;
+    const char *p = text;
+    int left = (int)strlen(text);
+    while (left > 0) {
+        int cp, n = uno_u8_get(p, left, &cp);
+        if (n <= 0) break;
+        p += n; left -= n;
+        memset(&e, 0, sizeof e);
+        e.kind = UI_EV_CHAR;
+        e.ch   = cp;
+        feed(&e);
+    }
+}
+
+/* --keys: navigation keys, one letter each, on the canvas road.
+ *   L R U D  arrows      H E  Home/End      B  Backspace   X  Delete
+ * Enough to check the thing typing cannot: that a caret STEP is a character
+ * and not a byte.  "LLB" on a line of accented text has to remove one whole
+ * character three back, and leave valid UTF-8 behind. */
+static void press_keys(const char *keys)
+{
+    unoui_event e;
+    for (; *keys; keys++) {
+        int k;
+        switch (*keys) {
+        case 'L': k = UI_KEY_LEFT;      break;
+        case 'R': k = UI_KEY_RIGHT;     break;
+        case 'U': k = UI_KEY_UP;        break;
+        case 'D': k = UI_KEY_DOWN;      break;
+        case 'H': k = UI_KEY_HOME;      break;
+        case 'E': k = UI_KEY_END;       break;
+        case 'B': k = UI_KEY_BACKSPACE; break;
+        case 'X': k = UI_KEY_DELETE;    break;
+        default:  continue;
+        }
+        memset(&e, 0, sizeof e);
+        e.kind = UI_EV_KEY;
+        e.key  = k;
+        feed(&e);
+    }
+}
+
 /* headless: boot, run a few frames, snapshot, exit.  The whole editor core
  * renders in software into fb[], so "can it draw the workbench" needs no
  * display server - this is the build gate on a bare CI box. */
@@ -253,6 +326,18 @@ static int shot_mode(const char *out)
 {
     int i;
     boot_app();
+    /* Lay the workbench out BEFORE typing into it.  uc_edit_reveal() scrolls
+     * the caret into view against the editor's rect, and until something has
+     * painted, that rect is empty - so it computes "one column fits" and
+     * scrolls the whole typed line off to the left.  A real user types after
+     * the window exists; the headless hands have to do the same. */
+    render_frame();
+    if (g_type_text) { type_text(g_type_text); host_mark_dirty(); }
+    if (g_keys)      { press_keys(g_keys);    host_mark_dirty(); }
+    if (g_do_save) {
+        void *d = uc_doc_active();
+        if (d) uc_doc_save(d);
+    }
     for (i = 0; i < 5; i++) { APP->frame(); UI.ticks++; }
     render_frame();
     if (!write_ppm(out)) return 1;
@@ -275,6 +360,9 @@ int main(int argc, char **argv)
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--shot") && i + 1 < argc) shot = argv[++i];
         else if (!strcmp(argv[i], "--open") && i + 1 < argc) g_open_file = argv[++i];
+        else if (!strcmp(argv[i], "--type") && i + 1 < argc) g_type_text = argv[++i];
+        else if (!strcmp(argv[i], "--keys") && i + 1 < argc) g_keys = argv[++i];
+        else if (!strcmp(argv[i], "--save")) g_do_save = 1;
         else workdir = argv[i];
     }
 
