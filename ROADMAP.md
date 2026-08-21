@@ -276,16 +276,16 @@ Four things Studio's client does **not** do, which is most of what is left:
   cannot.
 - It sends **only the latest user message**. The conversation buffer exists and
   is drawn, but `build_request()` puts one user turn in the body, so the model
-  has no history.
+  has no history. Fixed in Studio too, as part of UCD-46.
 - It has **no tool use**, so it can write code into a reply but cannot read a
   file, write one, or run what it wrote. That is the whole difference between a
   chat pane and an assistant.
 - It is a **built-in pane**, not an extension, so nothing about it is VS Code
   compatible and no third-party extension can reach the model.
 
-Also worth knowing before you copy anything out of it: its default model string
-is `claude-sonnet-4-5`, which is two families stale. The current ids are
-`claude-opus-5`, `claude-sonnet-5`, `claude-fable-5` and `claude-haiku-4-5`.
+The stale model string and the missing history are **defects in Studio, not
+just gaps**, and they are fixed as UCD-46's `[UPSTREAM]` half rather than left
+for someone to rediscover.
 
 ### UCD-44: `[DONE]` the core moves here, and this repo becomes its home
 **Status:** done · **Size:** M
@@ -320,8 +320,8 @@ set a header - which is why Studio went around it rather than through it.
   from a config file on any of them; and the fake provider in
   `upstream/unodos/pc64/tls_test/ai_server.py` serves the desktop build too.
 
-### UCD-46: an HTTP + JSON client in the core
-**Status:** open · **Size:** M · **Depends:** UCD-45
+### UCD-46: an HTTP + JSON client in the core, and Studio's two defects
+**Status:** open · **Size:** M · **Depends:** UCD-45 · **Has an `[UPSTREAM]` half**
 
 Lift `studio_ai.c`'s request construction and `studio_json.c`'s extractor into
 `core/uc_http.c`, against `uc_json.c` (which already parses JSONC and is
@@ -332,10 +332,39 @@ arbitrary headers, a body of any size, multi-turn message history, and
 Streaming is the part with no precedent to copy. Studio de-chunks in place
 after the whole response has landed; an SSE stream is chunked *and* still
 arriving, so the decoder has to hand out events mid-transfer.
+`pc64_http.c`'s progress callback is no help either: it is explicitly not
+offered for chunked responses.
+
+**The `[UPSTREAM]` half: fix Studio while you are reading it.** Two defects are
+in `pc64/apps/studio_ai.c` in `hmofet/unodos`, which is that repo's own file
+and not vendored, so they are commits there under its `AGENTS.md` process.
+Whoever lifts this code is the person who has just understood it, which is why
+they are attached to this task rather than left as a separate one.
+
+- **The default model is `claude-sonnet-4-5`, two families stale.** Current ids
+  are `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5` and
+  `claude-haiku-4-5-20251001` (that one carries a date suffix; the others do
+  not). Default to `claude-sonnet-5` and leave Opus 5 selectable with `/model`.
+  Check the ids rather than copying them from here - this list ages.
+- **Only the latest user turn is sent.** `build_request()` puts one user message
+  in the body. The conversation buffer exists, is bounded, drops the oldest turn
+  and is drawn on screen, so the pane *looks* like it has a memory and the model
+  has never seen one. Feed `msg[]` through as a real `messages` array. Both
+  other providers need the same, in their own shapes.
+
+**Do not try to make Studio and UnoCode share one compiled client in this
+task.** They are separate `.UNO` modules, so sharing means either compiling the
+same file into both or adding a kernel export, and the vendored core is not
+reachable from the `apps/` lane today. Fix Studio in place; the sharing question
+is worth revisiting once the seam is real, and the one thing to preserve for it
+is that **`uc_http.c` must not include `unocode.h`** - it should need only
+`uc_net.h` and `uc_json.c`, which is what would make it liftable later.
 
 - **Done when:** a POST with custom headers and a 100 KB body round-trips, an
-  SSE stream is delivered event by event rather than at the end, and both are
-  gated offline against `ai_server.py` with no key and no internet.
+  SSE stream is delivered event by event rather than at the end, both are gated
+  offline against `ai_server.py` with no key and no internet, and Studio holds a
+  real multi-turn conversation against a current model with `tools/json_test.c`
+  still green.
 
 ### UCD-47: the request must not stop the frame
 **Status:** open · **Size:** M · **Depends:** UCD-46
