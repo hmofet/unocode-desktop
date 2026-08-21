@@ -39,6 +39,13 @@ asserts separately on the post-handshake figure.
 UCD-11 waits - it buys long filenames on the desktop and nothing at all on the
 device, where FAT is 8.3 regardless.
 
+**Test builds for all three platforms are on `U:\UnoCode`** (2026-08-21, from
+`main` @ 2a85c46, each from a clean `--recurse-submodules` clone). Read the
+README beside them first: U: is a network share and Windows will not execute
+from one, so they have to be copied to a local disk. And note that UCD-44 to
+UCD-47 have **no user interface** - the editor a tester sees is Tier 0, and the
+new transport is reachable only through `linux/tests/http_test` and `net_test`.
+
 **The editor now lives here.** `core/` is canonical and UnoDOS vendors it;
 `upstream/` is still pinned and read-only but is down to unoui, unojs and fb.
 Read [core/README.md](core/README.md) before touching either side of that.
