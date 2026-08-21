@@ -25,7 +25,8 @@ host/           the SDL2 + OS shim. This is your code.
   host_win.c      title, pointer shapes, window geometry + session (07/08/09)
   host_dialog.c   what happens after the native Open dialog closes (UCD-06)
   host_pick_*.c   the dialogs themselves, per platform
-  host_shell.c    the five pc64_shell_* hooks the core expects
+  host_shell.c    the pc64_shell_* hooks the core expects (the eighth,
+                  pc64_shell_pick, lives in host_dialog.c with its dialog)
   compat/         headers that shadow upstream ones via #include_next, ONLY
                   where there is no other way (see uno_appdesc.h)
 tools/          the tests. One per seam, each linking the unit under test.
