@@ -25,6 +25,11 @@
 #include <sys/stat.h>
 #include <dirent.h>
 
+#ifndef _WIN32
+#  include <limits.h>
+#  include <stdlib.h>
+#endif
+
 #ifdef _WIN32
 #  include <direct.h>
 #  define host_mkdir(p) _mkdir(p)
@@ -59,6 +64,62 @@ int host_fs_add_volume(const char *name, const char *root, int writable)
     while (n > 1 && v->root[n - 1] == '/') v->root[--n] = 0;
     v->writable = writable;
     return g_nvol++;
+}
+
+/* Canonical absolute path, '/'-separated.  Everything downstream compares
+ * paths - "is this file inside the workspace", "is this the folder last
+ * session had open" - and "." compares equal to nothing, including itself
+ * after a chdir.  Falls back to copying the input rather than failing: a
+ * relative root still works, it just will not match. */
+int host_fs_abspath(const char *in, char *out, int cap)
+{
+    size_t n;
+    /* The ALLOCATING form of both, deliberately.  realpath() into a caller's
+     * buffer is only safe when that buffer is PATH_MAX - glibc's _FORTIFY
+     * check aborts the process outright otherwise, which is exactly what a
+     * 1 KB buffer here did - and PATH_MAX is 4 KB on Linux, larger than
+     * anything else in this file wants to be. */
+#ifdef _WIN32
+    char *full = _fullpath(0, in, 0);
+#else
+    char *full = realpath(in, 0);
+#endif
+    snprintf(out, (size_t)cap, "%s", full ? full : in);
+    if (full) free(full);
+    for (n = 0; out[n]; n++) if (out[n] == '\\') out[n] = '/';
+    n = strlen(out);
+    while (n > 1 && out[n - 1] == '/') out[--n] = 0;
+    return full != 0;
+}
+
+/* mkdir -p.  The per-user data directory does not exist on a first run, and
+ * uno_fs_mkdir() cannot create it: that road resolves INSIDE a volume, which
+ * needs the volume's own root to be there already. */
+int host_fs_mkpath(const char *path)
+{
+    char buf[MAXPATH];
+    size_t i, n;
+    struct stat st;
+
+    if (!path || !*path) return 0;
+    n = strlen(path);
+    if (n >= sizeof buf) return 0;
+    memcpy(buf, path, n + 1);
+    for (i = 0; i < n; i++) if (buf[i] == '\\') buf[i] = '/';
+
+    /* skip a leading "/" or a "C:/" so the first component is never empty */
+    i = (buf[0] == '/') ? 1 : (n > 2 && buf[1] == ':') ? 3 : 0;
+    for (; i <= n; i++) {
+        if (buf[i] && buf[i] != '/') continue;
+        { char save = buf[i];
+          buf[i] = 0;
+          if (buf[0] && stat(buf, &st) != 0 && host_mkdir(buf) != 0) {
+              /* a race with another process creating it is not a failure */
+              if (stat(buf, &st) != 0) return 0;
+          }
+          buf[i] = save; }
+    }
+    return stat(path, &st) == 0;
 }
 
 /* ---- case-insensitive path resolution ------------------------------------- */
@@ -393,6 +454,33 @@ static int resolve(int vol, const char *path, char *out, int create_leaf)
     return 1;
 }
 
+/* Re-point an existing volume at a different directory.  Open Folder does this
+ * to volume 0 rather than restarting the process, so the explorer, quick open
+ * and search all re-root together - they all address the volume, not a path.
+ *
+ * The alias table is dropped with it: its entries are keyed by (volume,
+ * directory, name), and every one of them now describes a tree that is no
+ * longer mounted.  Keeping them would leave an alias resolving into the OLD
+ * folder, which is the worst of the available outcomes. */
+int host_fs_set_volume_root(int vol, const char *root)
+{
+    size_t n;
+    struct stat st;
+    if (vol < 0 || vol >= g_nvol || !root || !root[0]) return 0;
+    if (stat(root, &st) != 0 || (st.st_mode & S_IFMT) != S_IFDIR) return 0;
+    snprintf(g_vol[vol].root, sizeof g_vol[vol].root, "%s", root);
+    for (n = 0; g_vol[vol].root[n]; n++)
+        if (g_vol[vol].root[n] == '\\') g_vol[vol].root[n] = '/';
+    n = strlen(g_vol[vol].root);
+    while (n > 1 && g_vol[vol].root[n - 1] == '/') g_vol[vol].root[--n] = 0;
+
+    g_aliasn = 0;
+    g_adirn  = 0;
+    g_apooln = 0;
+    memset(g_ahash, 0, sizeof g_ahash);
+    return 1;
+}
+
 /* ---- the seam ------------------------------------------------------------- */
 
 int uno_fs_volumes(void) { return g_nvol; }
@@ -408,7 +496,17 @@ int uno_fs_writable(int vol)
 }
 
 int uno_fs_kind(int vol)  { (void)vol; return 0; }
-int uno_fs_pref_vol(void) { return 0; }
+
+/* Where per-user state belongs.  This answered 0 - the WORKSPACE - so
+ * UNOCODE\SETTINGS.JSN was written into the folder being edited: every project
+ * UnoCode touched grew a settings directory, and sooner or later one of them
+ * would have arrived in somebody's pull request.  main.c points this at HOME
+ * once that volume is registered.  Workspace-scoped files (TASKS.JSN,
+ * LAUNCH.JSN) do not come through here - they are read from UC.ws_dir on the
+ * workspace volume, which is where they belong. */
+static int g_pref_vol;
+void host_fs_set_pref_vol(int vol) { if (vol >= 0 && vol < g_nvol) g_pref_vol = vol; }
+int  uno_fs_pref_vol(void)         { return g_pref_vol; }
 
 /* -1 for every volume: the core then lists through uno_fs_list_dir and probes
  * directories with uno_fs_isdir, both of which this host answers truthfully.

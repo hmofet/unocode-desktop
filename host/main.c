@@ -58,6 +58,7 @@ static const UnoUuiApp *APP;
 extern const UnoUuiApp *uno_app_main(void *reserved);
 extern const struct unoui_theme *pc64_shell_theme(void);   /* host_shell.c */
 extern int uc_doc_open(int vol, const char *dir, const char *name);
+extern void uc_open_folder(int vol, const char *dir);
 
 /* UcDoc is an anonymous struct in unocode.h, which is subsystem-internal and
  * this host may not include, so the handle travels as void * - it is only ever
@@ -65,10 +66,19 @@ extern int uc_doc_open(int vol, const char *dir, const char *name);
 extern void *uc_doc_active(void);
 extern int   uc_doc_save(void *d);
 
+/* re-derive the editor's font metrics after a UI-scale change (uc_edit.c) */
+extern void uc_metrics_init(void);
+extern void uno_font_set_ui_scale(int pct);
+extern int  uc_host_dirty_count(void);
+extern int  uc_host_save_all(void);
+
 static const char *g_open_file;    /* --open, resolved after the app is up */
 static const char *g_type_text;    /* --type, fed in as character events   */
 static const char *g_keys;         /* --keys, navigation keys after --type */
 static int         g_do_save;      /* --save, after --type                 */
+static float       g_wheel_acc;    /* sub-notch trackpad scroll, UCD-10     */
+static HostGeom    G;              /* window geometry + last session        */
+static const char *g_workdir = ".";
 
 unsigned long host_ms(void) { return (unsigned long)SDL_GetTicks64(); }
 
@@ -80,7 +90,13 @@ static void setup_volumes(const char *workdir)
     char res[900], home[900];
     const char *env;
 
-    host_fs_add_volume("WORK", workdir, 1);
+    {   /* absolute, so the volume survives a chdir and the session-restore
+         * comparison against last run's folder can actually match */
+        char abs[900];
+        host_fs_abspath(workdir, abs, sizeof abs);
+        host_fs_add_volume("WORK", abs, 1);
+        host_dialog_set_root(abs);
+    }
 
     /* bundled resources: <exe>/res in an installed layout, ./res in a dev
      * tree.  Registered read-only: nothing the core does may edit the app. */
@@ -96,15 +112,77 @@ static void setup_volumes(const char *workdir)
         host_fs_add_volume("APP", res, 0);
     }
 
-    /* per-user data dir - reserved now, the settings home in phase 0.5 */
+    /* Per-user data: where settings and keybindings live.  Created here,
+     * because the core can only mkdir INSIDE a volume and this is the volume's
+     * own root; and made the preferred volume, so UNOCODE\SETTINGS.JSN stops
+     * being written into whatever folder is being edited. */
+    {
+        int vol;
 #ifdef _WIN32
-    env = getenv("APPDATA");
-    snprintf(home, sizeof home, "%s\\UnoCode", env ? env : ".");
+        env = getenv("APPDATA");
+        snprintf(home, sizeof home, "%s\\UnoCode", env ? env : ".");
 #else
-    env = getenv("HOME");
-    snprintf(home, sizeof home, "%s/.unocode", env ? env : ".");
+        env = getenv("HOME");
+        snprintf(home, sizeof home, "%s/.unocode", env ? env : ".");
 #endif
-    host_fs_add_volume("HOME", home, 1);
+        host_fs_mkpath(home);
+        vol = host_fs_add_volume("HOME", home, 1);
+        if (vol >= 0) host_fs_set_pref_vol(vol);
+        host_state_dir(home);
+        host_recent_file(home);
+        host_recent_load();
+    }
+}
+
+/* ---- HiDPI ----------------------------------------------------------------
+ * SDL reports two sizes for one window: POINTS (what the window manager and
+ * every mouse event use) and PIXELS (what the renderer actually has).  On a
+ * Retina or 150%-scaled display they differ, and phase 0 sized the framebuffer
+ * in points - so the editor was rendered at half resolution and stretched,
+ * which on a Mac is the first thing anyone notices.
+ *
+ * The framebuffer is sized in PIXELS now.  Input stays in points and is scaled
+ * on the way in, and the UI scale is driven from the same ratio so a 2x
+ * display draws text at native resolution at the same physical size, rather
+ * than drawing it small and magnifying it. */
+static int g_dpi = 100;                 /* pixels per point, percent */
+
+static int to_px(int pt) { return pt * g_dpi / 100; }
+
+static void sync_dpi(SDL_Window *win, SDL_Renderer *ren, SDL_Texture **tex)
+{
+    int pw = 0, ph = 0, lw = 0, lh = 0, dpi;
+    SDL_GetRendererOutputSize(ren, &pw, &ph);
+    SDL_GetWindowSize(win, &lw, &lh);
+    if (pw <= 0 || ph <= 0 || lw <= 0) return;
+
+    dpi = pw * 100 / lw;
+    if (dpi < 100) dpi = 100;           /* a renderer smaller than the window */
+    if (dpi > 400) dpi = 400;
+    g_dpi = dpi;
+
+    if (pw > FB_MAX_W) pw = FB_MAX_W;
+    if (ph > FB_MAX_H) ph = FB_MAX_H;
+    if (pw == uno_fb_w && ph == uno_fb_h && *tex) return;
+
+    uno_fb_w = pw;
+    uno_fb_h = ph;
+    UI.screen_w = pw;
+    UI.screen_h = ph;
+    UI.work = (unoui_rect){ 0, 0, pw, ph };
+    host_workarea_w = pw;
+    host_workarea_h = ph;
+
+    /* uno_font_set_ui_scale clamps to 100..200; past 2x the glyphs stay at 2x
+     * and the extra pixels buy sharpness rather than size, which is the right
+     * way round to run out. */
+    uno_font_set_ui_scale(dpi);
+    uc_metrics_init();
+
+    if (*tex) SDL_DestroyTexture(*tex);
+    *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888,
+                             SDL_TEXTUREACCESS_STREAMING, pw, ph);
+    host_mark_dirty();
 }
 
 /* ---- input translation ---------------------------------------------------- */
@@ -224,6 +302,52 @@ static void on_text(const char *text)
     }
 }
 
+/* ---- closing --------------------------------------------------------------
+ * Phase 0 discarded unsaved editors SILENTLY on window close.  That is data
+ * loss, which is why this sits in Tier 0 rather than among the polish.
+ *
+ * SDL's own message box is used rather than a drawn-in-canvas prompt: it is
+ * modal to the window on every platform, it takes Escape and Return without
+ * this loop having to route them, and it cannot be missed behind the editor.
+ * Returns 1 if it is safe to close. */
+static int confirm_close(SDL_Window *win)
+{
+    static const SDL_MessageBoxButtonData btn[] = {
+        { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 0, "Save"    },
+        { 0,                                       1, "Discard" },
+        { SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 2, "Cancel"  },
+    };
+    SDL_MessageBoxData box;
+    char msg[128];
+    int n = uc_host_dirty_count(), id = 2;
+
+    if (n <= 0) return 1;
+    snprintf(msg, sizeof msg, "%d unsaved %s.\nSave before closing?",
+             n, n == 1 ? "editor" : "editors");
+
+    memset(&box, 0, sizeof box);
+    box.flags      = SDL_MESSAGEBOX_WARNING;
+    box.window     = win;
+    box.title      = "UnoCode";
+    box.message    = msg;
+    box.numbuttons = 3;
+    box.buttons    = btn;
+
+    /* If the dialog cannot be shown at all, treat it as Cancel: refusing to
+     * close is recoverable, closing over unsaved work is not. */
+    if (SDL_ShowMessageBox(&box, &id) != 0) return 0;
+    if (id == 1) return 1;                       /* discard */
+    if (id != 0) return 0;                       /* cancel, or the window's X */
+    if (uc_host_save_all() == 0) return 1;
+    /* Only untitled editors can still be dirty here, and they have nowhere to
+     * be saved to without a dialog this task does not own yet. */
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "UnoCode",
+                             "Some editors are untitled and were not saved.\n"
+                             "Use Save As, or close again to discard them.",
+                             win);
+    return 0;
+}
+
 /* ---- render --------------------------------------------------------------- */
 
 static void render_frame(void) { unoui_render_ui(&UI); }
@@ -251,6 +375,14 @@ static void boot_app(void)
     unoui_ui_add(&UI, &WIN);
     unoui_fullscreen(&UI, &WIN);
     if (APP->opened) APP->opened();
+
+    /* State the workspace explicitly.  The core opens the PREFERRED volume as
+     * its workspace at boot, which is right on pc64 - there the user's stick is
+     * both - and wrong here the moment UCD-05 pointed the preferred volume at
+     * HOME: the folder on the command line vanished and the explorer showed the
+     * settings directory instead.  On a desktop the two are separate ideas, so
+     * say which is which rather than letting one imply the other. */
+    uc_open_folder(0, "");
 
     /* --open: a path relative to the workspace volume. Split off the directory
      * the way the core's own openers do, since uc_doc_open takes them apart. */
@@ -366,6 +498,7 @@ int main(int argc, char **argv)
         else workdir = argv[i];
     }
 
+    g_workdir = workdir;
     if (SDL_Init(shot ? SDL_INIT_TIMER : SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
         fprintf(stderr, "SDL: %s\n", SDL_GetError());
         return 1;
@@ -374,21 +507,30 @@ int main(int argc, char **argv)
 
     if (shot) return shot_mode(shot);
 
-    win = SDL_CreateWindow("UnoCode",
-                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                           uno_fb_w, uno_fb_h,
-                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    host_geom_load(&G);
+    win = SDL_CreateWindow("UnoCode", G.x, G.y, G.w, G.h,
+                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
+                           (G.maximized ? SDL_WINDOW_MAXIMIZED : 0));
     if (!win) { fprintf(stderr, "SDL window: %s\n", SDL_GetError()); return 1; }
     SDL_SetWindowMinimumSize(win, 700, 460);            /* the app's own min */
     SDL_SetWindowMaximumSize(win, FB_MAX_W, FB_MAX_H);  /* fb ceiling        */
 
     ren = SDL_CreateRenderer(win, -1, 0);
     if (!ren) { fprintf(stderr, "SDL renderer: %s\n", SDL_GetError()); return 1; }
-    tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888,
-                            SDL_TEXTUREACCESS_STREAMING, uno_fb_w, uno_fb_h);
+    tex = 0;
 
     boot_app();
+    sync_dpi(win, ren, &tex);       /* AFTER boot: it re-derives font metrics */
+    /* Reopen last session's editors, but only for the SAME folder: the tab
+     * list is workspace-relative, and replaying it against a different tree
+     * would open whatever happened to share those names. */
+    if (G.ntab && G.folder[0] && !strcmp(G.folder, host_dialog_root()))
+        host_geom_reopen(&G);
+    host_geom_note(win);
     host_clip_init();
+    host_cursors_init();
+    host_title_update(win);
+    host_recent_add(host_dialog_root());
     SDL_StartTextInput();
 
     while (running) {
@@ -399,26 +541,17 @@ int main(int argc, char **argv)
           do {
             switch (ev.type) {
             case SDL_QUIT:
-                running = 0;
+                running = confirm_close(win) ? 0 : 1;
                 break;
             case SDL_WINDOWEVENT:
-                if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                    int w = ev.window.data1, h = ev.window.data2;
-                    if (w > FB_MAX_W) w = FB_MAX_W;
-                    if (h > FB_MAX_H) h = FB_MAX_H;
-                    if (w > 0 && h > 0 && (w != uno_fb_w || h != uno_fb_h)) {
-                        uno_fb_w = w;
-                        uno_fb_h = h;
-                        UI.screen_w = w;
-                        UI.screen_h = h;
-                        UI.work = (unoui_rect){ 0, 0, w, h };
-                        host_workarea_w = w;
-                        host_workarea_h = h;
-                        SDL_DestroyTexture(tex);
-                        tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888,
-                                                SDL_TEXTUREACCESS_STREAMING, w, h);
-                        host_mark_dirty();
-                    }
+                if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                    ev.window.event == SDL_WINDOWEVENT_MOVED) {
+                    /* Ask SDL for the sizes rather than trusting the event's:
+                     * data1/data2 are POINTS, and dragging between a 1x and a
+                     * 2x monitor changes the pixel size without changing them
+                     * at all. */
+                    sync_dpi(win, ren, &tex);
+                    host_geom_note(win);
                 } else if (ev.window.event == SDL_WINDOWEVENT_EXPOSED) {
                     host_mark_dirty();
                 } else if (ev.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
@@ -434,9 +567,10 @@ int main(int argc, char **argv)
             case SDL_MOUSEMOTION:
                 memset(&e, 0, sizeof e);
                 e.kind = UI_EV_MOUSE_MOVE;
-                e.x = ev.motion.x; e.y = ev.motion.y;
+                e.x = to_px(ev.motion.x); e.y = to_px(ev.motion.y);
                 e.mods = ui_mods(SDL_GetModState());
                 feed(&e);
+                host_cursor_update(e.x, e.y);
                 break;
             case SDL_MOUSEBUTTONDOWN:
             case SDL_MOUSEBUTTONUP:
@@ -444,18 +578,33 @@ int main(int argc, char **argv)
                     memset(&e, 0, sizeof e);
                     e.kind = (ev.type == SDL_MOUSEBUTTONDOWN)
                              ? UI_EV_MOUSE_DOWN : UI_EV_MOUSE_UP;
-                    e.x = ev.button.x; e.y = ev.button.y;
+                    e.x = to_px(ev.button.x); e.y = to_px(ev.button.y);
                     e.mods = ui_mods(SDL_GetModState());
                     feed(&e);
                 }
                 break;
             case SDL_MOUSEWHEEL: {
-                int mx, my;
+                /* Trackpads report FRACTIONS of a notch.  Translating the
+                 * integer field 1:1, as phase 0 did, threw those away - so
+                 * two-finger scrolling moved in jumps or, below one notch,
+                 * not at all - and passed a fast wheel spin straight through
+                 * as a page jump.  Accumulate the precise value and spend it
+                 * a notch at a time, capped so one flick cannot leap the
+                 * document. */
+                int mx, my, notches;
+                float precise = ev.wheel.preciseY;
+                if (precise == 0.0f) precise = (float)ev.wheel.y;
+                g_wheel_acc += precise;
+                notches = (int)g_wheel_acc;
+                if (!notches) break;
+                g_wheel_acc -= (float)notches;
+                if (notches > 5) notches = 5;
+                if (notches < -5) notches = -5;
                 SDL_GetMouseState(&mx, &my);
                 memset(&e, 0, sizeof e);
                 e.kind = UI_EV_WHEEL;
-                e.x = mx; e.y = my;
-                e.wheel = -ev.wheel.y;          /* unoui: positive = down */
+                e.x = to_px(mx); e.y = to_px(my);
+                e.wheel = -notches;             /* unoui: positive = down */
                 feed(&e);
                 break;
             }
@@ -476,6 +625,7 @@ int main(int argc, char **argv)
         UI.ticks++;
 
         if (host_take_dirty()) {
+            host_title_update(win);      /* the dirty marker changes with it */
             render_frame();
             SDL_UpdateTexture(tex, 0, fb, uno_fb_w * (int)sizeof(fb_px));
             SDL_RenderClear(ren);
@@ -484,6 +634,8 @@ int main(int argc, char **argv)
         }
     }
 
+    /* the CURRENT root, which Open Folder may have moved since launch */
+    host_geom_save(win, host_dialog_root());
     if (APP->closed) APP->closed();
     SDL_Quit();
     return 0;

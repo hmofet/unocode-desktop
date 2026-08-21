@@ -43,14 +43,6 @@ static void ok(int cond, const char *what)
     if (!cond) g_fail++;
 }
 
-static void oks(const char *got, const char *want, const char *what)
-{
-    int c = got && !strcmp(got, want);
-    printf("%s %s%s%s%s\n", c ? "  ok  " : "  FAIL", what,
-           c ? "" : "  (got \"", c ? "" : (got ? got : "(null)"),
-           c ? "" : "\")");
-    if (!c) g_fail++;
-}
 
 /* ---- scratch tree ---------------------------------------------------------- */
 
@@ -131,7 +123,7 @@ int main(int argc, char **argv)
 {
     char names[64][16], again[64][16];
     char alias_a[16], alias_b[16], alias_d[16], alias_i[16];
-    char buf[512], sub[1024];
+    char buf[512], sub[256];
     int n, n2, i;
 
     if (argc < 2) { fprintf(stderr, "usage: fs_test <scratch-dir>\n"); return 2; }
@@ -294,7 +286,9 @@ int main(int argc, char **argv)
                "the long name got a DIFFERENT alias");
             if (a) {
                 long got;
-                snprintf(sub, sizeof sub, "collide\\%s", a);
+                /* %.15s, not %s: a seam name is at most 15 bytes, and saying
+                 * so is what stops the compiler assuming the worst */
+                snprintf(sub, sizeof sub, "collide\\%.15s", a);
                 got = uno_fs_read(0, sub, (unsigned char *)buf, sizeof buf - 1);
                 if (got < 0) got = 0;
                 buf[got] = 0;
@@ -328,7 +322,7 @@ int main(int argc, char **argv)
             /* every alias that WAS handed out must still resolve */
             int good = 1;
             for (i = 0; i < m; i++) {
-                snprintf(sub, sizeof sub, "many\\%s", full[i]);
+                snprintf(sub, sizeof sub, "many\\%.15s", full[i]);
                 if (uno_fs_size(0, sub) != 2) good = 0;
             }
             ok(good, "every alias handed out under a full table still resolves");

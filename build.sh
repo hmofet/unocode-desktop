@@ -25,7 +25,9 @@ UNOUI="$U/unoui/unoui.c $U/unoui/unoui_input.c $U/unoui/unoui_anim.c \
        $U/unoui/unoui_wmanim.c $U/unoui/themes/theme_unodos.c"
 UNOJS=$(ls $U/unojs/ujs_*.c)
 FB="$U/pc64/fb.c $U/pc64/pc64_font.c"
-HOST="host/main.c host/host_fs.c host/host_shell.c host/host_clip.c"
+HOST="host/main.c host/host_fs.c host/host_shell.c host/host_clip.c \
+      host/host_win.c host/host_dialog.c host/host_pick_win.c \
+      host/host_pick_unix.c"
 
 INC="-Ihost/compat -I$U/pc64 -I$U/pc64/unocode -I$U/unoui -I$U/unojs -Ihost"
 DEFS="-DUNO_PC64"
@@ -75,7 +77,7 @@ build_windows() {
         -I"$T/include/SDL2" -Dmain=SDL_main \
         $HOST $UC $UNOUI $UNOJS $FB \
         -o build/win/unocode.exe \
-        -L"$T/lib" -lmingw32 -lSDL2main -lSDL2 -mwindows -lm
+        -L"$T/lib" -lmingw32 -lSDL2main -lSDL2 -mwindows -lm -lole32 -luuid
     cp "$T/../x86_64-w64-mingw32/bin/SDL2.dll" build/win/ 2>/dev/null || \
         cp "$T/bin/SDL2.dll" build/win/
     stage_res build/win/res
@@ -135,6 +137,17 @@ clip_test() {
     fi
 }
 
+# What happens AFTER the Open dialog closes (UCD-06).  The dialog is the OS's;
+# the translation from an absolute path back to (volume, directory, name) is
+# ours, and is the part that can be wrong quietly.
+dialog_test() {
+    mkdir -p build
+    rm -rf build/dlg_ws
+    # shellcheck disable=SC2086
+    $CC -O1 -g $WARN $INC $(sdl2-config --cflags)         tools/dialog_test.c host/host_dialog.c host/host_fs.c         -o build/dialog_test $(sdl2-config --libs)
+    ./build/dialog_test build/dlg_ws
+}
+
 # The UTF-8 decoder every text road now depends on (UCD-03).
 utf8_test() {
     mkdir -p build
@@ -185,7 +198,8 @@ EOF
 
 case "${1:-}" in
     --windows) build_windows ;;
-    --test)    utf8_test; fs_test; clip_test ;;
-    --gate)    build_native; utf8_test; fs_test; clip_test; gate; utf8_gate ;;
+    --test)    utf8_test; fs_test; clip_test; dialog_test ;;
+    --gate)    build_native; utf8_test; fs_test; clip_test; dialog_test
+               gate; utf8_gate ;;
     *)         build_native ;;
 esac
