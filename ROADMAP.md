@@ -250,6 +250,17 @@ Land it in unodos, then bump the submodule here and delete UCD-01's alias table.
 - **Done when:** the alias table is gone, names round-trip verbatim, and pc64
   still builds and passes its own gate (the FAT backend keeps 8.3 internally).
 
+**Read [AGENTS.md](AGENTS.md) §4.1 before you start this one.** `uno_fs_list_dir`
+is touched by three `.c` files, and **this repo's gate compiles exactly one of
+them**: `uc_main.c`. The other two - `pc64_fs.c`, which DEFINES it, and
+`pc64_modload.c`, which exports it - are kernel-side and are never built here at
+any warning level. Changing that signature will therefore build clean, gate
+green and run correctly in UnoCode Desktop while leaving pc64 unable to compile.
+That already happened once on a one-line export (unodos `029a4f17`); this task
+changes a signature used across the kernel, so it will happen harder. Run
+`cd upstream/unodos/pc64 && sh tools/gate.sh` before you push upstream, not
+after.
+
 ### UCD-12: workspace-wide search
 **Status:** open · **Size:** M
 
