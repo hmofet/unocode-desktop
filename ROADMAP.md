@@ -21,12 +21,14 @@ daily driver on Windows, Linux and macOS. What exists:
 - The editor is [benchmarked](BENCHMARK.md) against VS Code and wins on startup,
   memory, process count and disk by large multiples.
 
-**Start with UCD-48.** Tier A was inserted ahead of Tier 1 on 2026-08-21,
-because the assistant is what the product is going to be shown doing. Four of
+**Start with UCD-49.** Tier A was inserted ahead of Tier 1 on 2026-08-21,
+because the assistant is what the product is going to be shown doing. Five of
 it are done: UCD-44 moved the editor into this repository, UCD-45 built the
 network seam, UCD-46 built `core/uc_http.c` on top of it - arbitrary headers,
-incremental chunked decoding and SSE events delivered as they arrive - and
-UCD-47 took the last blocking step out of a request.
+incremental chunked decoding and SSE events delivered as they arrive - UCD-47
+took the last blocking step out of a request, and UCD-48 gave the key
+somewhere to live that is not a settings file (`AI: Set API Key` stores
+`anthropic.key` behind `core/uc_secret.h`; UCD-49 reads it from there).
 A real unauthenticated POST to api.anthropic.com returns a 401 whose JSON
 error is read back out, so the whole stack is proved against the real API.
 
@@ -418,7 +420,9 @@ plus a pump between frames carries it.
   window mid-flight tears the connection down instead of leaking it.
 
 ### UCD-48: `SecretStorage`, and a key that is not sitting in a settings file
-**Status:** in progress · **Size:** S
+**Status:** done (DPAPI / Keychain / 0600 file / a FAT file that says so;
+`context.secrets` for extensions, names prefixed with the extension identity)
+· **Size:** S
 
 Studio keeps API keys in `AI.CFG` in plaintext and says so. Offer VS Code's
 `SecretStorage` shape, backed by DPAPI on Windows and the Keychain on macOS.
