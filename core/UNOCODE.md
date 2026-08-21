@@ -151,6 +151,11 @@ vscode.workspace.name / .rootPath
 vscode.workspace.getConfiguration(section)   // .get(key, dflt) .update(key, v)
 vscode.workspace.openTextDocument(path)
 vscode.workspace.fs.readFile(path) / .writeFile(path, text)
+vscode.workspace.fs.readDirectory(path)      // -> [[name, type], ...]; 1 file,
+                                             //    2 directory; "" = the root
+vscode.workspace.canRunPrograms              // can this platform launch one?
+vscode.workspace.runUserProgram(path)        // "" = launched; else the reason
+                                             // (on pc64, the Python error)
 vscode.workspace.onDidSaveTextDocument(fn)   // also onDidOpen / onDidChange
 
 vscode.languages.registerCompletionItemProvider(selector, provider)
@@ -410,4 +415,8 @@ typed into a *document*.
   holding a streaming chat, code blocks in the editor's grammars, and edits
   proposed as a diff before they are applied as one undo step. `vscode.lm`
   (UCD-50): the model for extensions, behind the `languageModels` manifest
-  permission.
+  permission. The Assistant extension (UCD-51, `EXT\ASSIST`): an agentic
+  loop with read_file / write_file / list_dir - and run where the platform
+  can (`workspace.canRunPrograms`) - every write shown as a diff and applied
+  only on consent. Its tool protocol is documented at the top of its
+  `MAIN.JS`, which is also the worked example of `vscode.lm`.

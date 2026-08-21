@@ -277,17 +277,22 @@ int uc_api_call_str(int thenable_id, const char *value)
 {
     ujs_val fn, arg, out;
     ujs_scope sc;
-    int jsid;
+    int jsid, prev;
     if (!g_vm || thenable_id < 0 || thenable_id >= THENABLES_MAX) return 0;
     jsid = g_then[thenable_id];
     g_then[thenable_id] = -1;
     if (jsid < 0) return 0;
     fn = handler_get(jsid);
     if (!ujs_is_function(g_vm, fn)) return 0;
+    /* the callback runs AS its extension - a permission checked inside it
+     * (vscode.lm) must see who is asking, not -1 */
+    prev = g_cur_ext;
+    g_cur_ext = (jsid < g_nh) ? g_hext[jsid] : -1;
     ujs_scope_open(g_vm, &sc);
     arg = (value && value[0]) ? ujs_string(g_vm, value, -1) : ujs_undefined();
     call_fn(fn, 1, &arg, &out, "thenable");
     ujs_scope_close(g_vm, &sc, ujs_undefined());
+    g_cur_ext = prev;
     return 1;
 }
 
@@ -296,16 +301,19 @@ static int api_call_val(int thenable_id, ujs_val v)
 {
     ujs_val fn, out;
     ujs_scope sc;
-    int jsid;
+    int jsid, prev;
     if (!g_vm || thenable_id < 0 || thenable_id >= THENABLES_MAX) return 0;
     jsid = g_then[thenable_id];
     g_then[thenable_id] = -1;
     if (jsid < 0) return 0;
     fn = handler_get(jsid);
     if (!ujs_is_function(g_vm, fn)) return 0;
+    prev = g_cur_ext;
+    g_cur_ext = (jsid < g_nh) ? g_hext[jsid] : -1;
     ujs_scope_open(g_vm, &sc);
     call_fn(fn, 1, &v, &out, "thenable");
     ujs_scope_close(g_vm, &sc, ujs_undefined());
+    g_cur_ext = prev;
     return 1;
 }
 
@@ -717,6 +725,41 @@ static ujs_val js_fs_write(ujs_args *a)
     const char *body = ujs_is_string(cv) ? ujs_string_bytes(a->vm, cv, &n) : 0;
     if (!body) return ujs_throw_error(a->vm, "TypeError", "writeFile needs a string");
     return ujs_bool(uno_fs_write(UC.ws_vol, p, (const unsigned char *)body, (long)n));
+}
+
+/* readDirectory: VS Code's [name, FileType] pairs (1 = file, 2 = directory),
+ * over the workspace volume like the rest of workspace.fs.  UCD-51's list_dir
+ * tool is the first caller. */
+static ujs_val js_fs_readdir(ujs_args *a)
+{
+    static char names[220][16];
+    static unsigned char isdir[220];
+    const char *p = arg_str(a, 0, "");
+    int n = uc_list_dir(UC.ws_vol, p, names, isdir, 220), i;
+    ujs_val arr = ujs_array_new(a->vm);
+    if (n > 220) n = 220;
+    for (i = 0; i < n; i++) {
+        ujs_val pair;
+        if (!names[i][0]) continue;
+        pair = ujs_array_new(a->vm);
+        ujs_array_push(a->vm, pair, ujs_string(a->vm, names[i], -1));
+        ujs_array_push(a->vm, pair, ujs_number(isdir[i] ? 2 : 1));
+        ujs_array_push(a->vm, arr, pair);
+    }
+    return arr;
+}
+
+/* Launch a user program (UCD-51's run tool).  Resolves the shell's answer:
+ * "" is a clean launch, anything else is the reason it did not run - on pc64
+ * that is the Python traceback, which is exactly what an assistant needs to
+ * read to fix the program.  The desktop shell refuses (see canRunPrograms);
+ * the refusal text lands here too, so even a caller that ignored the
+ * capability flag gets the truth instead of a hang. */
+static ujs_val js_run_user(ujs_args *a)
+{
+    const char *p = arg_str(a, 0, "");
+    int rc = pc64_shell_run_user(UC.ws_vol, p);
+    return ujs_string(a->vm, rc < 0 ? pc64_shell_py_error() : "", -1);
 }
 
 static ujs_val js_open_document(ujs_args *a)
@@ -1163,7 +1206,12 @@ static void build_api(ujs_vm *vm)
     fs = ujs_object_new(vm);
     ujs_set_fn(vm, fs, "readFile", js_fs_read, 1);
     ujs_set_fn(vm, fs, "writeFile", js_fs_write, 2);
+    ujs_set_fn(vm, fs, "readDirectory", js_fs_readdir, 1);
     ujs_set(vm, ws, "fs", fs);
+    /* whether this platform can launch a user program at all - the shell's
+     * answer, not a guess, so an assistant offers only what exists (UCD-51) */
+    ujs_set(vm, ws, "canRunPrograms", ujs_bool(pc64_shell_can_run()));
+    ujs_set_fn(vm, ws, "runUserProgram", js_run_user, 1);
     ujs_set(vm, g_api, "workspace", ws);
 
     langs = ujs_object_new(vm);

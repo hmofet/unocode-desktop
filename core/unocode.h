@@ -79,6 +79,10 @@ void  pc64_shell_dirty(void);
 const struct unoui_theme *pc64_shell_theme(void);
 int   pc64_shell_font_mono(void);
 int   pc64_shell_run_user(int vol, const char *path);
+/* 1 when pc64_shell_run_user can actually launch something here.  The
+ * desktop answers 0 until UCD-14; an assistant reads this to offer only the
+ * tools the platform has (UCD-51). */
+int   pc64_shell_can_run(void);
 /* The shell's NATIVE file picker, if it has one.  A hosted build (UnoCode
  * Desktop) opens the OS dialog here, because users expect their own file
  * manager's places and bookmarks rather than a list this module invented, and

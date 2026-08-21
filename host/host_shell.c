@@ -44,6 +44,10 @@ int pc64_shell_run_user(int vol, const char *path)
     return -1;
 }
 
+/* ... and the capability flag saying so UP FRONT, so an assistant can leave
+ * the run tool out entirely instead of offering one that always refuses. */
+int pc64_shell_can_run(void) { return 0; }
+
 const char *pc64_shell_py_error(void) { return g_run_err; }
 
 void pc64_browser_open_path(const char *path) { (void)path; }
