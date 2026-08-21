@@ -785,6 +785,12 @@ int  uc_term_key(int key, int mods, int ch);
 void uc_term_write(const char *s);
 void uc_term_writeln(const char *s);
 void uc_term_run(const char *cmdline);
+/* the child process, where the platform has one (UCD-14).  tick() drains its
+ * output once a frame; child_stop() kills it, which is what closing the panel
+ * and closing the window both do. */
+void uc_term_tick(void);
+int  uc_term_child_running(void);
+void uc_term_child_stop(void);
 void uc_term_clear(void);
 void uc_tasks_run(const char *label);      /* tasks.json                    */
 int  uc_tasks_count(void);
@@ -833,6 +839,7 @@ int  uc_list_dir(int vol, const char *dir, char (*names)[UC_NAME_MAX],
 void uc_status_msg(const char *s);
 const char *uc_status_msg_get(void);
 void uc_toggle_panel(int tab);
+void uc_show_panel(int tab);      /* open it; never the closing half        */
 void uc_toggle_sidebar(int view);
 
 /* ---- host queries (uc_main.c, uc_edit.c) -----------------------------------

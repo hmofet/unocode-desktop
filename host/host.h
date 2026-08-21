@@ -40,6 +40,11 @@ int  host_fs_abspath(const char *in, char *out, int cap);
  * re-root together - every one of them addresses the volume, not a path. */
 int  host_fs_set_volume_root(int vol, const char *root);
 
+/* Where a volume actually lives on this OS.  The seam hides this from the
+ * core on purpose; uc_proc_workdir() is the one caller that needs it, because
+ * a child process starts in a real directory or nowhere. */
+const char *host_fs_volume_root(int vol);
+
 /* ---- Open File / Open Folder (host_dialog.c + host_pick_*.c) --------------
  * The picker is native, because a user's places, bookmarks and network mounts
  * live in their file manager and an in-app list has none of them.  The editor

@@ -94,7 +94,7 @@ void uc_output_write(int ch, const char *s)
 void uc_output_show(int ch)
 {
     if (ch >= 0 && ch < g_nout) g_outsel = ch;
-    uc_toggle_panel(UC_PANEL_OUTPUT);
+    uc_show_panel(UC_PANEL_OUTPUT);
 }
 
 /* ---- notifications ----------------------------------------------------------- */

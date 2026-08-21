@@ -78,7 +78,7 @@ build_native() {
     bearssl_archive build/bearssl.a "$CC" "${AR:-ar}"
     $CC -O2 -g $WARN $DEFS $INC $(sdl2-config --cflags) \
         $HOST $UC $UNOUI $UNOJS $FB $TLS \
-        -o build/unocode $(sdl2-config --libs) build/bearssl.a -lm $NETLIBS
+        -o build/unocode $(sdl2-config --libs) build/bearssl.a -lm $NETLIBS $PTYLIBS
     stage_res build/res
     echo "built: build/unocode"
 }
@@ -127,9 +127,9 @@ EOF
 }
 
 # ---- the seam test ---------------------------------------------------------
-# host_fs.c's contract, driven directly: the long-name alias table (UCD-01)
-# has to be tested at the seam, not through a screenshot.  Built with small
-# caps so the full-table road is reached with eight names, not four thousand.
+# host_fs.c's contract, driven directly: the WIDENED listing seam (UCD-11).
+# It has to be tested at the seam, not through a screenshot - what a listing
+# does with a name too long for the caller's slot is invisible from outside.
 fs_test() {
     mkdir -p build
     rm -rf build/fs_test_ws

@@ -30,7 +30,8 @@ FB="$U/pc64/fb.c $U/pc64/pc64_font.c"
 # disagree, which is exactly the bug this file exists to prevent.
 HOST="host/main.c host/host_fs.c host/host_shell.c host/host_clip.c \
       host/host_win.c host/host_dialog.c host/host_pick_win.c \
-      host/host_pick_unix.c host/host_net.c host/host_secret.c"
+      host/host_pick_unix.c host/host_net.c host/host_secret.c \
+      host/host_proc.c"
 
 # TLS.  BearSSL comes out of the submodule and so does the trust store, which
 # is the point: tls_ca.c is generated, self-contained and includes only
@@ -65,6 +66,12 @@ TLS="$U/pc64/tls_ca.c"
 # The Windows build does NOT use it - it spawns through _beginthreadex from the
 # CRT, so there is nothing extra to link beyond what it already does.
 NETLIBS="-lpthread"
+
+# forkpty (UCD-14).  On glibc it lives in libutil, which is a separate archive
+# there and folded into libc on macOS and the BSDs - so this is Linux-only and
+# build-mac.sh must NOT pass it.  The Windows build has no pty at all; it uses
+# ConPTY out of kernel32, resolved at run time.
+PTYLIBS="-lutil"
 
 INC="-Ihost/compat -I$U/pc64 -Icore -I$U/unoui -I$U/unojs -Ihost \
      -I$U/pc64/bearssl/inc -I$U/pc64/bearssl/src"

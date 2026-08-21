@@ -217,6 +217,23 @@ void uc_toggle_sidebar(int view)
     uc_repaint();
 }
 
+/* SHOW, which is not toggle.  Everything that wants the panel in front -
+ * running a task, an extension's output channel, a launch - wants it OPEN,
+ * and said so by calling uc_toggle_panel(); if it was already open on that
+ * tab, that CLOSED it.  Harmless while the panel was only text, and not
+ * harmless now that closing it kills a running child (UCD-14): starting a
+ * task with the terminal already up hid the panel and killed the task in the
+ * same call. */
+void uc_show_panel(int tab)
+{
+    UC.panel_visible = 1;
+    if (tab >= 0) UC.panel_tab = tab;
+    if (UC.panel_tab == UC_PANEL_TERMINAL) uc_term_init();
+    uc_focus(UC_F_PANEL);
+    uc_layout();
+    uc_repaint();
+}
+
 void uc_toggle_panel(int tab)
 {
     if (tab < 0) UC.panel_visible = !UC.panel_visible;
@@ -224,6 +241,10 @@ void uc_toggle_panel(int tab)
         UC.panel_visible = 0;
     else { UC.panel_visible = 1; UC.panel_tab = tab; uc_focus(UC_F_PANEL); }
     if (UC.panel_visible && UC.panel_tab == UC_PANEL_TERMINAL) uc_term_init();
+    /* Closing the panel kills whatever was running in it (UCD-14).  A build
+     * left alive behind a hidden panel keeps a pty, a process and a CPU, and
+     * there is no longer anywhere to see that it is there. */
+    if (!UC.panel_visible) uc_term_child_stop();
     uc_layout();
     uc_repaint();
 }
@@ -401,6 +422,13 @@ static int uc_key_hook(int uni, int scan, int ctrl)
     if (uc_quick_active()) { uc_quick_key(key, mods, 0); uc_repaint(); return 1; }
     if (uc_keys_dispatch(key, mods)) { uc_repaint(); return 1; }
     if (uc_find_active() && key == UI_KEY_ESC) { uc_find_close(); uc_repaint(); return 1; }
+    /* A Ctrl chord the keymap did not claim still belongs to whatever has
+     * FOCUS.  Ctrl chords ride this road and only this one - the host sends
+     * them through APP->key() and never as a canvas key event - so without
+     * this, Ctrl+C in the terminal reached nothing at all and a running child
+     * could not be interrupted (UCD-14). */
+    if (UC.focus == UC_F_PANEL && uc_panel_key(key, mods, 0)) { uc_repaint(); return 1; }
+    if (UC.focus == UC_F_SIDEBAR && uc_sidebar_key(key, mods, 0)) { uc_repaint(); return 1; }
     return 0;
 }
 
@@ -479,6 +507,7 @@ static void uc_closed(void)
      * in-flight generation does NOT stay: tearing the connection down here is
      * what keeps a closed window from leaking a socket (UCD-47's rule). */
     uc_ai_abort();
+    uc_term_child_stop();      /* a build must not outlive the window */
     uc_quick_close();
     uc_find_close();
     uc_suggest_close();
@@ -494,6 +523,7 @@ static void uc_frame(void)
     uc_api_pump();
     uc_ai_tick();
     uc_search_tick();
+    uc_term_tick();
     /* Repaint on the CARET's cadence, not on the frame's: a blinking caret
      * needs two repaints a second, and asking for one every frame would keep
      * the whole desktop compositing for no visible difference. */

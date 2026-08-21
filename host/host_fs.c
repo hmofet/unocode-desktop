@@ -71,6 +71,14 @@ int host_fs_add_volume(const char *name, const char *root, int writable)
     return g_nvol++;
 }
 
+/* This volume's host directory, for anything that has to leave the seam and
+ * speak to the OS in its own terms - today, where to start a child process
+ * (uc_proc_workdir, UCD-14).  "" when the volume does not exist. */
+const char *host_fs_volume_root(int vol)
+{
+    return (vol >= 0 && vol < g_nvol) ? g_vol[vol].root : "";
+}
+
 /* Canonical absolute path, '/'-separated.  Everything downstream compares
  * paths - "is this file inside the workspace", "is this the folder last
  * session had open" - and "." compares equal to nothing, including itself
