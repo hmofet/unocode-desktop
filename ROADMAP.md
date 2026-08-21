@@ -21,12 +21,17 @@ daily driver on Windows, Linux and macOS. What exists:
 - The editor is [benchmarked](BENCHMARK.md) against VS Code and wins on startup,
   memory, process count and disk by large multiples.
 
-**Start with UCD-46.** Tier A was inserted ahead of Tier 1 on 2026-08-21,
-because the assistant is what the product is going to be shown doing. Two of
-it are done: UCD-44 moved the editor into this repository so that work happens
-in one place instead of two, and UCD-45 built the network seam - `core/uc_net.h`
-is answered by both platforms, and a real handshake with api.anthropic.com
-completes from the desktop build against UnoDOS's own fourteen roots.
+**Start with UCD-47.** Tier A was inserted ahead of Tier 1 on 2026-08-21,
+because the assistant is what the product is going to be shown doing. Three of
+it are done: UCD-44 moved the editor into this repository, UCD-45 built the
+network seam, and UCD-46 built `core/uc_http.c` on top of it - arbitrary
+headers, incremental chunked decoding and SSE events delivered as they arrive.
+A real unauthenticated POST to api.anthropic.com returns a 401 whose JSON
+error is read back out, so the whole stack is proved against the real API.
+
+**The last blocking step in a request is DNS.** `uc_http_begin()` resolves
+through `uc_net_resolve()`, and that call blocks on both platforms. Everything
+after it is pumped. That is UCD-47's to remove.
 
 UCD-11 waits - it buys long filenames on the desktop and nothing at all on the
 device, where FAT is 8.3 regardless.
@@ -342,7 +347,7 @@ change that gated green here and did not compile in pc64 on 2026-08-21.
   `upstream/unodos/pc64/tls_test/ai_server.py` serves the desktop build too.
 
 ### UCD-46: an HTTP + JSON client in the core, and Studio's two defects
-**Status:** open · **Size:** M · **Depends:** UCD-45 · **Has an `[UPSTREAM]` half**
+**Status:** done (725b482; upstream ee8ba5ee) · **Size:** M
 
 Lift `studio_ai.c`'s request construction and `studio_json.c`'s extractor into
 `core/uc_http.c`, against `uc_json.c` (which already parses JSONC and is
