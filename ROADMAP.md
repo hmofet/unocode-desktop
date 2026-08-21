@@ -418,7 +418,7 @@ plus a pump between frames carries it.
   window mid-flight tears the connection down instead of leaking it.
 
 ### UCD-48: `SecretStorage`, and a key that is not sitting in a settings file
-**Status:** open · **Size:** S
+**Status:** in progress · **Size:** S
 
 Studio keeps API keys in `AI.CFG` in plaintext and says so. Offer VS Code's
 `SecretStorage` shape, backed by DPAPI on Windows and the Keychain on macOS.
