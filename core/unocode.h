@@ -598,6 +598,17 @@ void uc_ai_clear(void);              /* new conversation                     */
 void uc_ai_open(void);               /* show + focus the view                */
 int  uc_ai_busy(void);
 
+/* The LM slot (UCD-50): one streaming exchange for a caller that brings its
+ * own message list - the extension host's vscode.lm rides this.  Deltas and
+ * completion arrive from uc_ai_tick(), so the callbacks run in C frame
+ * context, never inside a JS call. */
+typedef void (*UcLmDeltaFn)(void *user, const char *s, int n);
+typedef void (*UcLmDoneFn)(void *user, int status, const char *err);
+/* 1 = started.  0 = refused, with *why set to a sentence (busy, no key). */
+int  uc_lm_begin(const char *messages_json, UcLmDeltaFn on_delta,
+                 UcLmDoneFn on_done, void *user, const char **why);
+void uc_lm_cancel(void);
+
 /* ======================================================================== *
  * uc_cmd.c - commands, keybindings, the palette and quick open.
  * ======================================================================== */
@@ -688,6 +699,7 @@ typedef struct {
     char main[16];            /* "MAIN.JS", "" = declarative only           */
     int  vol;
     int  enabled, activated, broken;
+    unsigned char perm_lm;    /* manifest declares "languageModels" (UCD-50) */
     int  ncmd, ntheme, ngram, nsnip;
     char err[80];
     unsigned long act_ms;     /* activation cost, shown in the ext view     */

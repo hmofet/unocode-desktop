@@ -450,7 +450,7 @@ the existing document model already draw.
   code block is syntax-coloured, and an applied edit is one undo step.
 
 ### UCD-50: a model API extensions can call
-**Status:** open · **Size:** M · **Depends:** UCD-46, UCD-47
+**Status:** in progress · **Size:** M · **Depends:** UCD-46, UCD-47
 
 Expose the client to the extension host in `vscode.lm`'s shape, so the
 assistant is an **extension** rather than a built-in pane and a third-party

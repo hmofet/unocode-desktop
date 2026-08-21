@@ -109,66 +109,193 @@ int uc_ai_busy(void) { return g_req != 0; }
 
 /* ---- the exchange ---------------------------------------------------------- */
 
+/* The SECOND slot (UCD-50): one exchange for a caller that brings its own
+ * message list - the extension host's vscode.lm.  Same transport, same model
+ * setting, same key; what differs is where the deltas go, and that both
+ * callers can be in flight at once without knowing about each other. */
+static uc_http    *g_lmreq;
+static UcLmDeltaFn g_lm_delta;
+static UcLmDoneFn  g_lm_done;
+static void       *g_lm_user;
+static char        g_lm_apierr[160];   /* an "error" SSE event, kept for done */
+
 /* One SSE event.  The event NAME is advisory; the data's own "type" is what
- * the API documents, so that is what is switched on. */
+ * the API documents, so that is what is switched on.  `user` says which slot
+ * the stream belongs to: null is the chat transcript, anything else the LM
+ * caller's. */
 static void ai_sse(void *user, const char *event, const char *data, int len)
 {
     UcJson *root;
     char err[80];
     const char *type;
-    (void)user; (void)event;
+    (void)event;
     root = uc_json_parse(data, len, err, sizeof err);
     if (!root) return;                          /* a ping, or noise - skip    */
     type = uc_json_str(root, "type", "");
     if (!strcmp(type, "content_block_delta")) {
         UcJson *t = uc_json_path(root, "delta.text");
         if (t && t->type == UJ_STR) {
-            int had = ai_room();
-            ai_append(t->str, (int)strlen(t->str));
-            if (had > 0 && ai_room() <= 0)
-                ai_note("The transcript is full - AI: New Chat to continue.");
-            if (g_stick) g_scroll = 1 << 28;    /* clamp pins it to the end   */
-            uc_repaint();
+            if (user) {
+                if (g_lm_delta)
+                    g_lm_delta(g_lm_user, t->str, (int)strlen(t->str));
+            } else {
+                int had = ai_room();
+                ai_append(t->str, (int)strlen(t->str));
+                if (had > 0 && ai_room() <= 0)
+                    ai_note("The transcript is full - AI: New Chat to continue.");
+                if (g_stick) g_scroll = 1 << 28;  /* clamp pins it to the end */
+                uc_repaint();
+            }
         }
     } else if (!strcmp(type, "error")) {
         UcJson *m = uc_json_path(root, "error.message");
-        char msg[160];
-        uc_scpy(msg, "The API reported: ", sizeof msg);
-        uc_scat(msg, m && m->type == UJ_STR ? m->str : "an error", sizeof msg);
-        ai_note(msg);
+        if (user) {
+            uc_scpy(g_lm_apierr, m && m->type == UJ_STR ? m->str : "an error",
+                    sizeof g_lm_apierr);
+        } else {
+            char msg[160];
+            uc_scpy(msg, "The API reported: ", sizeof msg);
+            uc_scat(msg, m && m->type == UJ_STR ? m->str : "an error",
+                    sizeof msg);
+            ai_note(msg);
+        }
     }
     uc_json_free(root);
 }
 
-static void ai_send(void)
+/* Start one streaming exchange with the configured model, `msgs` being the
+ * JSON text of the "messages" array.  Both slots come through here, so there
+ * is one place that knows the endpoint, the headers and where the key comes
+ * from.  Returns the handle, or 0 with `why` set to a sentence. */
+static uc_http *ai_begin_anthropic(const char *msgs, int msgs_len, void *user,
+                                   const char **why)
 {
     char key[UC_SECRET_MAX];
     char *b;
-    int cap, p = 0, i, first = 1;
+    int cap, p = 0;
     uc_http_req rq;
     uc_header hdr[4];
+    uc_http *h;
+
+    if (!uc_secret_get("anthropic.key", key, sizeof key)) {
+        *why = "No API key is set - run \"AI: Set API Key\" from the command "
+               "palette (Ctrl+Shift+P).";
+        return 0;
+    }
+    cap = msgs_len + 512;
+    b = (char *)malloc((unsigned long)cap);
+    if (!b) { *why = "out of memory building the request"; return 0; }
+    uc_buf_raw(b, &p, cap, "{\"model\":");
+    uc_buf_json(b, &p, cap, uc_cfg_str("ai.model"));
+    uc_buf_raw(b, &p, cap, ",\"max_tokens\":");
+    uc_buf_int(b, &p, cap, uc_cfg_int("ai.maxTokens"));
+    uc_buf_raw(b, &p, cap, ",\"stream\":true,\"messages\":");
+    uc_buf_n(b, &p, cap, msgs, msgs_len);
+    uc_buf_raw(b, &p, cap, "}");
+    if (p >= cap) {
+        free(b);
+        *why = "the conversation is too large to send";
+        return 0;
+    }
+    memset(&rq, 0, sizeof rq);
+    rq.host = "api.anthropic.com";
+    rq.method = "POST";
+    rq.path = "/v1/messages";
+    hdr[0].name = "x-api-key";         hdr[0].value = key;
+    hdr[1].name = "anthropic-version"; hdr[1].value = "2023-06-01";
+    hdr[2].name = "content-type";      hdr[2].value = "application/json";
+    hdr[3].name = "accept";            hdr[3].value = "text/event-stream";
+    rq.headers = hdr;
+    rq.nheaders = 4;
+    rq.body = b;
+    rq.body_len = p;
+    h = uc_http_begin(&rq);
+    free(b);                        /* uc_http_begin copied what it needs     */
+    memset(key, 0, sizeof key);
+    if (!h) { *why = "the request could not be started"; return 0; }
+    uc_http_on_event(h, ai_sse, user);
+    return h;
+}
+
+/* The status-or-error sentence for a completed exchange.  Returns 0 when the
+ * exchange was a clean 200. */
+static const char *ai_finish_msg(uc_http *h, int poll_rc, char *out, int cap)
+{
+    int st;
+    if (poll_rc < 0) { uc_scpy(out, uc_http_error(h), cap); return out; }
+    st = uc_http_status(h);
+    if (st == 200) return 0;
+    {
+        /* the error body survives streaming on purpose - see take_body() */
+        int blen = 0;
+        const char *body = uc_http_body(h, &blen);
+        char num[16];
+        UcJson *root = body ? uc_json_parse(body, blen, out, cap) : 0;
+        UcJson *m = root ? uc_json_path(root, "error.message") : 0;
+        uc_scpy(out, "HTTP ", cap);
+        uc_itoa(num, st);
+        uc_scat(out, num, cap);
+        uc_scat(out, ": ", cap);
+        uc_scat(out, m && m->type == UJ_STR ? m->str : "the request was refused",
+                cap);
+        if (st == 401)
+            uc_scat(out, " - check the key with AI: Set API Key", cap);
+        if (root) uc_json_free(root);
+    }
+    return out;
+}
+
+int uc_lm_begin(const char *messages_json, UcLmDeltaFn on_delta,
+                UcLmDoneFn on_done, void *user, const char **why)
+{
+    if (g_lmreq) { *why = "one model request at a time - the running one has "
+                          "not finished"; return 0; }
+    g_lm_apierr[0] = 0;
+    g_lmreq = ai_begin_anthropic(messages_json, (int)strlen(messages_json),
+                                 &g_lmreq, why);
+    if (!g_lmreq) return 0;
+    g_lm_delta = on_delta;
+    g_lm_done = on_done;
+    g_lm_user = user;
+    return 1;
+}
+
+void uc_lm_cancel(void)
+{
+    if (!g_lmreq) return;
+    uc_http_free(g_lmreq);
+    g_lmreq = 0;
+    if (g_lm_done) g_lm_done(g_lm_user, 0, "cancelled");
+}
+
+static void ai_send(void)
+{
+    char *b;
+    int cap, p = 0, i, first = 1;
+    const char *why = 0;
 
     if (g_req || !g_inlen) return;
-    if (!uc_secret_get("anthropic.key", key, sizeof key)) {
-        ai_note("No API key is set. Run \"AI: Set API Key\" from the command "
-                "palette (Ctrl+Shift+P).");
-        return;
+    /* the key is checked BEFORE the turn is added, so a keyless send leaves
+     * the question in the input rather than stranding it in the transcript */
+    {
+        char key[8];
+        if (!uc_secret_get("anthropic.key", key, sizeof key)) {
+            ai_note("No API key is set. Run \"AI: Set API Key\" from the "
+                    "command palette (Ctrl+Shift+P).");
+            return;
+        }
     }
     ai_turn(AI_USER, g_input, g_inlen);
     g_inlen = 0;
     g_input[0] = 0;
 
-    /* the request body: every user and assistant turn, in order, with
+    /* the messages array: every user and assistant turn, in order, with
      * adjacent same-role turns MERGED - notes are dropped, and a dropped
      * note is how two user turns end up touching */
-    cap = g_len * 2 + 2048;
+    cap = g_len * 2 + 1024;
     b = (char *)malloc((unsigned long)cap);
     if (!b) { ai_note("Out of memory building the request."); return; }
-    uc_buf_raw(b, &p, cap, "{\"model\":");
-    uc_buf_json(b, &p, cap, uc_cfg_str("ai.model"));
-    uc_buf_raw(b, &p, cap, ",\"max_tokens\":");
-    uc_buf_int(b, &p, cap, uc_cfg_int("ai.maxTokens"));
-    uc_buf_raw(b, &p, cap, ",\"stream\":true,\"messages\":[");
+    uc_buf_raw(b, &p, cap, "[");
     for (i = 0; i < g_nturn; i++) {
         int role = g_turn[i].role;
         static char one[AI_TEXT_CAP];      /* 48 KB - not a stack frame      */
@@ -195,30 +322,16 @@ static void ai_send(void)
         uc_buf_raw(b, &p, cap, "}");
         first = 0;
     }
-    uc_buf_raw(b, &p, cap, "]}");
+    uc_buf_raw(b, &p, cap, "]");
     if (p >= cap) {                 /* truncated JSON earns a 400, not a send */
         free(b);
         ai_note("The conversation is too large to send - AI: New Chat.");
         return;
     }
-
-    memset(&rq, 0, sizeof rq);
-    rq.host = "api.anthropic.com";
-    rq.method = "POST";
-    rq.path = "/v1/messages";
-    hdr[0].name = "x-api-key";         hdr[0].value = key;
-    hdr[1].name = "anthropic-version"; hdr[1].value = "2023-06-01";
-    hdr[2].name = "content-type";      hdr[2].value = "application/json";
-    hdr[3].name = "accept";            hdr[3].value = "text/event-stream";
-    rq.headers = hdr;
-    rq.nheaders = 4;
-    rq.body = b;
-    rq.body_len = p;
-    g_req = uc_http_begin(&rq);
-    free(b);                        /* uc_http_begin copied what it needs     */
-    memset(key, 0, sizeof key);
-    if (!g_req) { ai_note("The request could not be started."); return; }
-    uc_http_on_event(g_req, ai_sse, 0);
+    b[p] = 0;
+    g_req = ai_begin_anthropic(b, p, 0, &why);
+    free(b);
+    if (!g_req) { ai_note(why); return; }
     ai_turn(AI_ASSIST, "", 0);      /* the deltas stream into this turn      */
     g_stick = 1;
     uc_repaint();
@@ -234,46 +347,32 @@ void uc_ai_abort(void)
 
 void uc_ai_tick(void)
 {
+    char msg[200];
     int r;
-    if (!g_req) return;
+    if (!g_req && !g_lmreq) return;
     uc_net_pump();
-    r = uc_http_poll(g_req);
-    if (r == UC_HTTP_PENDING) return;
-    {
-    /* a failed or empty exchange leaves no bare "Assistant" header behind */
-    int was_empty = g_nturn && g_turn[g_nturn - 1].role == AI_ASSIST &&
-                    g_turn[g_nturn - 1].len == 0;
-    if (was_empty) g_nturn--;
-    if (r < 0)
-        ai_note(uc_http_error(g_req));
-    else {
-        int st = uc_http_status(g_req);
-        if (st != 200) {
-            /* the error body survives streaming on purpose - see take_body() */
-            int blen = 0;
-            const char *body = uc_http_body(g_req, &blen);
-            char msg[200], num[16];
-            UcJson *root = body ? uc_json_parse(body, blen, msg, sizeof msg) : 0;
-            UcJson *m = root ? uc_json_path(root, "error.message") : 0;
-            uc_scpy(msg, "HTTP ", sizeof msg);
-            uc_itoa(num, st);
-            uc_scat(msg, num, sizeof msg);
-            uc_scat(msg, ": ", sizeof msg);
-            uc_scat(msg, m && m->type == UJ_STR ? m->str
-                                                : "the request was refused",
-                    sizeof msg);
-            if (st == 401)
-                uc_scat(msg, " - check the key with AI: Set API Key",
-                        sizeof msg);
-            ai_note(msg);
-            if (root) uc_json_free(root);
-        } else if (was_empty)
-            ai_note("The reply was empty.");
+
+    if (g_req && (r = uc_http_poll(g_req)) != UC_HTTP_PENDING) {
+        /* a failed or empty exchange leaves no bare "Assistant" header */
+        const char *err = ai_finish_msg(g_req, r, msg, sizeof msg);
+        int was_empty = g_nturn && g_turn[g_nturn - 1].role == AI_ASSIST &&
+                        g_turn[g_nturn - 1].len == 0;
+        if (was_empty) g_nturn--;
+        if (err) ai_note(err);
+        else if (was_empty) ai_note("The reply was empty.");
+        uc_http_free(g_req);
+        g_req = 0;
+        uc_repaint();
     }
+
+    if (g_lmreq && (r = uc_http_poll(g_lmreq)) != UC_HTTP_PENDING) {
+        const char *err = ai_finish_msg(g_lmreq, r, msg, sizeof msg);
+        if (!err && g_lm_apierr[0]) err = g_lm_apierr;
+        uc_http_free(g_lmreq);
+        g_lmreq = 0;
+        if (g_lm_done)
+            g_lm_done(g_lm_user, err ? 0 : 200, err);
     }
-    uc_http_free(g_req);
-    g_req = 0;
-    uc_repaint();
 }
 
 /* ---- layout + drawing ------------------------------------------------------
