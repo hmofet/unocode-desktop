@@ -105,8 +105,21 @@ print("gate: %dx%d, %d sampled colours - looks like a workbench" % (w, h, len(co
 EOF
 }
 
+# ---- the seam test ---------------------------------------------------------
+# host_fs.c's contract, driven directly: the long-name alias table (UCD-01)
+# has to be tested at the seam, not through a screenshot.  Built with small
+# caps so the full-table road is reached with eight names, not four thousand.
+fs_test() {
+    mkdir -p build
+    rm -rf build/fs_test_ws
+    $CC -O1 -g $WARN -DALIAS_MAX=8 -DALIAS_DIRS=8 \
+        tools/fs_test.c host/host_fs.c -o build/fs_test
+    ./build/fs_test build/fs_test_ws
+}
+
 case "${1:-}" in
     --windows) build_windows ;;
-    --gate)    build_native; gate ;;
+    --test)    fs_test ;;
+    --gate)    build_native; fs_test; gate ;;
     *)         build_native ;;
 esac
