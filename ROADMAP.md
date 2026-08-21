@@ -14,18 +14,22 @@ daily driver on Windows, Linux and macOS. What exists:
 
 - The unmodified core builds and runs on **Windows, Linux and macOS** (the mac
   build is a Universal Binary 2; both slices render byte-identical frames).
-- `./build.sh --gate` builds, runs four test suites, renders the workbench
+- `./build.sh --gate` builds, runs six test suites, renders the workbench
   headlessly and asserts a UTF-8 round trip through a real save. That is the
   check every task below must leave green. **Check its exit status, not its
   output**: a grep over the log will happily hide a stage that aborted.
 - The editor is [benchmarked](BENCHMARK.md) against VS Code and wins on startup,
   memory, process count and disk by large multiples.
 
-**Start with UCD-45.** Tier A was inserted ahead of Tier 1 on 2026-08-21: the
-assistant is what the product is going to be shown doing, and UCD-44 has
-already moved the editor into this repository so that work happens in one place
-instead of two. UCD-11 waits - it buys long filenames on the desktop and
-nothing at all on the device.
+**Start with UCD-46.** Tier A was inserted ahead of Tier 1 on 2026-08-21,
+because the assistant is what the product is going to be shown doing. Two of
+it are done: UCD-44 moved the editor into this repository so that work happens
+in one place instead of two, and UCD-45 built the network seam - `core/uc_net.h`
+is answered by both platforms, and a real handshake with api.anthropic.com
+completes from the desktop build against UnoDOS's own fourteen roots.
+
+UCD-11 waits - it buys long filenames on the desktop and nothing at all on the
+device, where FAT is 8.3 regardless.
 
 **The editor now lives here.** `core/` is canonical and UnoDOS vendors it;
 `upstream/` is still pinned and read-only but is down to unoui, unojs and fb.
@@ -303,7 +307,7 @@ nothing is canonical in both places.
   gate is green on the vendored copy.
 
 ### UCD-45: one net + TLS seam, implemented by both platforms
-**Status:** claimed (2026-08-21) · **Size:** M · **Has an `[UPSTREAM]` half**
+**Status:** done (083c7f9; upstream d9e03433) · **Size:** M
 
 Declare the seam the core will reach the network through - link up, resolve,
 CA-validated connect, read, write, close, plus an entropy-source query - as
