@@ -1341,6 +1341,8 @@ void uc_cmd_init(void)
     reg("workbench.action.quickOpen", "View", "Go to File...", c_quickopen);
     reg("workbench.action.gotoLine", "View", "Go to Line...", c_gotoline);
     reg("workbench.action.gotoSymbol", "View", "Go to Symbol in File...", c_gotosymbol);
+    reg("workbench.action.replaceInFiles", "Edit", "Replace All in Files",
+        uc_search_replace_all);
     reg("workbench.action.splitEditor", "View", "Split Editor", c_split);
     reg("workbench.action.focusFirstEditorGroup", "View", "Focus First Editor Group", c_focus_group1);
     reg("workbench.action.focusSecondEditorGroup", "View", "Focus Second Editor Group", c_focus_group2);

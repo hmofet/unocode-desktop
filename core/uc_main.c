@@ -412,6 +412,15 @@ static int route_key(int key, int mods)
 static int route_char(int ch)
 {
     UcDoc *d = uc_doc_active();
+    /* A CHORD's second key, when it is an unmodified letter.  Ctrl chords ride
+     * the key hook and plain letters ride this road, so "ctrl+k s" - a default
+     * binding, Save All - could never fire: the `s` arrived here as typing and
+     * was inserted into the document instead.  Only while a chord is pending,
+     * so ordinary typing is untouched. */
+    if (uc_chord_pending() && ch > 0 && ch < 128) {
+        int c = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
+        if (uc_keys_dispatch(c, 0)) return 1;
+    }
     if (uc_quick_active()) return uc_quick_key(0, 0, ch);
     if (uc_find_active() && UC.focus == UC_F_EDITOR) return uc_find_key(0, 0, ch);
     if (UC.focus == UC_F_SIDEBAR) return uc_sidebar_key(0, 0, ch);

@@ -561,32 +561,134 @@ void uc_search_tick(void)
     uc_repaint();
 }
 
+/* "src\\app\\main.c" -> ("src\\app", "main.c"), which is how the editor
+ * addresses a file.  Every road out of the results list needs it. */
+static void search_split(const char *rel, char *dir, int dcap,
+                         char *name, int ncap)
+{
+    int cut = -1, i;
+    for (i = 0; rel[i]; i++) if (rel[i] == '\\' || rel[i] == '/') cut = i;
+    if (cut >= 0) {
+        int n = cut < dcap - 1 ? cut : dcap - 1;
+        memcpy(dir, rel, (unsigned long)n);
+        dir[n] = 0;
+        uc_scpy(name, rel + cut + 1, ncap);
+    } else {
+        dir[0] = 0;
+        uc_scpy(name, rel, ncap);
+    }
+}
+
 /* Open what row `k` points at: a hit at its line, a file header at its top. */
 static void search_open_row(int k)
 {
     const char *rel;
     char dir[UC_PATH_MAX], name[UC_NAME_MAX];
-    int line = 1, cut = -1, i;
+    int line = 1;
     if (k < 0 || k >= g_nrow) return;
     rel = file_path(g_row[k].kind == SROW_HIT ? g_hit[g_row[k].ref].f
                                               : g_row[k].ref);
     if (g_row[k].kind == SROW_HIT) line = g_hit[g_row[k].ref].line;
-    for (i = 0; rel[i]; i++) if (rel[i] == '\\' || rel[i] == '/') cut = i;
-    if (cut >= 0) {
-        int n = cut < (int)sizeof dir - 1 ? cut : (int)sizeof dir - 1;
-        memcpy(dir, rel, (unsigned long)n);
-        dir[n] = 0;
-        uc_scpy(name, rel + cut + 1, sizeof name);
-    } else {
-        dir[0] = 0;
-        uc_scpy(name, rel, sizeof name);
-    }
+    search_split(rel, dir, sizeof dir, name, sizeof name);
     {
         int di = uc_doc_open(UC.ws_vol, dir, name);
         UcDoc *d = uc_doc_at(di);
         if (d) uc_move_to(d, uc_line_start(d, line - 1), 0);
         uc_focus(UC_F_EDITOR);
     }
+}
+
+/* ---- replace (UCD-13) -------------------------------------------------------
+ * Replacements go through the DOCUMENT, not through the file: uc_replace_range
+ * is the one edit primitive, so a replacement is undoable, the explorer sees
+ * the file as modified, and an open editor showing that file updates rather
+ * than going stale behind a rewritten disk copy.
+ *
+ * ONE UNDO STEP PER FILE, which is what uc_begin_group() buys - a Replace All
+ * that took thirty presses of Ctrl+Z to reverse would be a trap, not a
+ * feature.  The occurrences are walked BACKWARDS so that replacing one cannot
+ * move the offset of another that has not been reached yet.
+ *
+ * The file is left OPEN AND DIRTY rather than saved.  A cross-file replace is
+ * the most alarming thing this editor can do, and the version you can still
+ * undo and look at is the one worth handing back. */
+static char g_repl[80];
+static int  g_rlen, g_rfield;          /* g_rfield: 1 = the replace box     */
+
+static int replace_in_file(int f, int only_line)
+{
+    char dir[UC_PATH_MAX], name[UC_NAME_MAX];
+    const char *rel = file_path(f);
+    int nl = (int)strlen(g_needle), n = 0, di, k;
+    UcDoc *d;
+    if (!nl || f < 0) return 0;
+    search_split(rel, dir, sizeof dir, name, sizeof name);
+    di = uc_doc_open(UC.ws_vol, dir, name);
+    d = uc_doc_at(di);
+    if (!d) return 0;
+
+    uc_begin_group(d);
+    for (k = d->len - nl; k >= 0; k--) {
+        if (strncmp(d->text + k, g_needle, (unsigned long)nl)) continue;
+        if (only_line > 0 && uc_line_of(d, k) != only_line - 1) continue;
+        uc_replace_range(d, k, k + nl, g_rlen ? g_repl : 0, g_rlen);
+        n++;
+        k -= nl - 1;                    /* do not match inside what was put */
+        if (k < 0) break;
+    }
+    uc_end_group(d);
+    return n;
+}
+
+/* Replace at the selected row: one hit, or a whole file from its header. */
+static void search_replace_row(int k)
+{
+    int n;
+    char msg[80], num[16];
+    if (k < 0 || k >= g_nrow || !g_needle[0]) return;
+    if (g_row[k].kind == SROW_HIT)
+        n = replace_in_file(g_hit[g_row[k].ref].f, g_hit[g_row[k].ref].line);
+    else
+        n = replace_in_file(g_row[k].ref, 0);
+    uc_itoa(num, n);
+    uc_scpy(msg, num, sizeof msg);
+    uc_scat(msg, n == 1 ? " replacement" : " replacements", sizeof msg);
+    uc_notify(msg, UC_SEV_INFO);
+    uc_search_run(g_query);            /* the results must match reality    */
+}
+
+void uc_search_replace_all(void)
+{
+    int i, files = 0, total = 0, last = -1;
+    char msg[110], num[16];
+    if (!g_needle[0] || !g_nhit) {
+        uc_notify("Nothing to replace - search first", UC_SEV_WARN);
+        return;
+    }
+    /* every file with a hit, once - the hits are in file order, so a change
+     * of file index is a new file */
+    for (i = 0; i < g_nhit; i++) {
+        if (g_hit[i].f == last) continue;
+        last = g_hit[i].f;
+        /* UC_DOC_MAX editors exist; past that, stop and SAY so rather than
+         * silently replacing in some files and not others */
+        if (uc_doc_count() >= UC_DOC_MAX) {
+            uc_notify("Too many files at once - replace by file instead",
+                      UC_SEV_WARN);
+            break;
+        }
+        total += replace_in_file(last, 0);
+        files++;
+    }
+    uc_itoa(num, total);
+    uc_scpy(msg, num, sizeof msg);
+    uc_scat(msg, total == 1 ? " replacement in " : " replacements in ", sizeof msg);
+    uc_itoa(num, files);
+    uc_scat(msg, num, sizeof msg);
+    uc_scat(msg, files == 1 ? " file - each one undo step" :
+                              " files - each one undo step", sizeof msg);
+    uc_notify(msg, UC_SEV_INFO);
+    uc_search_run(g_query);
 }
 
 /* ---- side bar ------------------------------------------------------------------- */
@@ -668,7 +770,19 @@ static void sidebar_search(UcRect r)
                                            : uc_col(UC_C_INPUT_BORDER));
     if (g_qlen) uc_ui_text(f.x + 5, f.y + 4, g_query, uc_col(UC_C_INPUT_FG));
     else uc_ui_text(f.x + 5, f.y + 4, "Search", uc_col(UC_C_INPUT_PLACEHOLDER));
-    y += f.h + 8;
+    /* the REPLACE box under it (UCD-13); Tab moves between the two */
+    y += f.h + 4;
+    {
+        UcRect rp = (UcRect){ r.x + 8, y, r.w - 16, uc_ui_h() + 8 };
+        fb_fill_rect(rp.x, rp.y, rp.w, rp.h, uc_col(UC_C_INPUT_BG));
+        fb_frame_rect(rp.x, rp.y, rp.w, rp.h,
+                      (UC.focus == UC_F_SIDEBAR && g_rfield)
+                          ? uc_col(UC_C_FOCUS_BORDER) : uc_col(UC_C_INPUT_BORDER));
+        if (g_rlen) uc_ui_text(rp.x + 5, rp.y + 4, g_repl, uc_col(UC_C_INPUT_FG));
+        else uc_ui_text(rp.x + 5, rp.y + 4, "Replace (Tab to reach, Enter to apply)",
+                        uc_col(UC_C_INPUT_PLACEHOLDER));
+        y += rp.h + 6;
+    }
     if (g_searching) {
         /* PROGRESS, not a spinner: a tree that takes ten seconds should say
          * how far in it is, and Escape should visibly be an option */
@@ -927,23 +1041,39 @@ int uc_sidebar_key(int key, int mods, int ch)
         /* Escape stops a running search.  It is only a cancel because the scan
          * runs in slices - a synchronous walk would not be here to read it. */
         if (key == UI_KEY_ESC && g_searching) { uc_search_cancel(); return 1; }
+        if (key == UI_KEY_TAB) { g_rfield = !g_rfield; return 1; }
         if (key == UI_KEY_BACKSPACE) {
+            if (g_rfield) { if (g_rlen > 0) g_repl[--g_rlen] = 0; return 1; }
             if (g_qlen > 0) g_query[--g_qlen] = 0;
             uc_search_run(g_query);
             return 1;
         }
-        /* Enter OPENS the selected result.  It used to re-run the search,
+        /* Enter in the REPLACE box applies to the selected row; in the search
+         * box it OPENS the selected result.  Enter used to re-run the search,
          * which meant the keyboard could move the selection and never act on
          * it - the mouse was the only way to reach a hit. */
-        if (key == UI_KEY_ENTER) { search_open_row(g_hitsel); return 1; }
+        if (key == UI_KEY_ENTER) {
+            if (g_rfield) search_replace_row(g_hitsel);
+            else search_open_row(g_hitsel);
+            return 1;
+        }
         if (key == UI_KEY_UP)   { if (g_hitsel > 0) g_hitsel--; return 1; }
         if (key == UI_KEY_DOWN) { if (g_hitsel < g_nrow - 1) g_hitsel++; return 1; }
-        if (ch >= 32 && ch < 127 && g_qlen < (int)sizeof g_query - 1) {
-            g_query[g_qlen++] = (char)ch;
-            g_query[g_qlen] = 0;
-            /* search as you type: each keystroke restarts the sliced scan,
-             * and the previous one is abandoned rather than raced */
-            uc_search_run(g_query);
+        if (ch >= 32 && ch < 127) {
+            if (g_rfield) {
+                if (g_rlen < (int)sizeof g_repl - 1) {
+                    g_repl[g_rlen++] = (char)ch;
+                    g_repl[g_rlen] = 0;
+                }
+                return 1;
+            }
+            if (g_qlen < (int)sizeof g_query - 1) {
+                g_query[g_qlen++] = (char)ch;
+                g_query[g_qlen] = 0;
+                /* search as you type: each keystroke restarts the sliced scan,
+                 * and the previous one is abandoned rather than raced */
+                uc_search_run(g_query);
+            }
             return 1;
         }
         return 0;

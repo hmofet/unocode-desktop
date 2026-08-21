@@ -619,6 +619,9 @@ void uc_explorer_reveal(UcDoc *d);
 void uc_search_run(const char *needle);
 void uc_search_tick(void);
 void uc_search_cancel(void);
+/* Replace across every file with a hit (UCD-13).  One undo step per file, and
+ * the files are left open and dirty rather than saved. */
+void uc_search_replace_all(void);
 void uc_notif_draw(UcRect r);
 void uc_notif_tick(void);
 
