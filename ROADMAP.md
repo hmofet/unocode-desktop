@@ -41,6 +41,16 @@ Three things worth knowing before Tier 1 starts, none of them tasks yet:
   arithmetic and glyph cache), and UCD-06/07/08/09, which need queries only
   the subsystem can answer. Expect this: "host-side" is a guess until the
   seam is read.
+- **UCD-04's 2x path is UNVERIFIED.** Every other Tier 0 acceptance criterion
+  was exercised and watched: long names listed and saved back, the clipboard
+  round-tripping through a real X clipboard, UTF-8 typed and re-read
+  byte-exact, the native picker opening and re-rooting, the close prompt
+  refusing to lose work, the pointer changing shape, geometry restoring to
+  the pixel, settings landing in HOME and surviving a restart. HiDPI is the
+  exception: neither machine available here has a 2x display, so what is
+  confirmed is that the code computes 100% and changes nothing at 1x. The
+  arithmetic and the resize path want a Retina Mac or a 150% Windows display
+  before anyone calls that task closed.
 - **`--type`, `--keys` and `--save`** now join `--shot` as the gate's hands.
   A screenshot can say the workbench painted; only typing, moving and saving
   can say that what went in came back out. Later tasks should use them rather
