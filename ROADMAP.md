@@ -303,17 +303,34 @@ nothing is canonical in both places.
   gate is green on the vendored copy.
 
 ### UCD-45: one net + TLS seam, implemented by both platforms
-**Status:** open · **Size:** M
+**Status:** claimed (2026-08-21) · **Size:** M · **Has an `[UPSTREAM]` half**
 
 Declare the seam the core will reach the network through - link up, resolve,
 CA-validated connect, read, write, close, plus an entropy-source query - as
-`core/uc_net.h`. On pc64 it is a thin shim over the kernel exports Studio
-already uses. On the desktop it is new: `host/host_net.c`, over BearSSL (which
-upstream already vendors at `pc64/bearssl`, MIT) and platform sockets.
+`core/uc_net.h`. On pc64 it is a shim over kernel exports. On the desktop it is
+new: `host/host_net.c`, over BearSSL (which upstream already vendors at
+`pc64/bearssl`, MIT) and platform sockets.
 
 Keep it a **socket** seam, not a request seam. `pc64_http.c` is the browser's
 client, owned by the browser lane, and its POST is form-encoded with no way to
 set a header - which is why Studio went around it rather than through it.
+
+**Shape the seam like pc64's HANDLE API, not like the one Studio uses.**
+`tls.h` has two surfaces over one engine: `tls_open`/`tls_poll`/`tls_send`/
+`tls_recv`/`tls_free`, which are non-blocking and pumped from wherever you
+already call `net_poll()`, and the legacy module-scoped `tls_connect`/
+`tls_write`/`tls_read`/`tls_close`, which block. Studio uses the legacy one,
+which is exactly why it stalls the frame. Copying that shape here would make
+UCD-47 a rewrite of this task instead of a use of it.
+
+**The `[UPSTREAM]` half, and it is in the file this repo's gate cannot see.**
+The five handle calls are **not in `kExports`** - `pc64_modload.c` exports
+`net_poll`, `pc64_net_up`, `net_dns_query` and the four legacy `tls_*`, and
+nothing else. UNOCODE.UNO is a module, so today it can only reach the blocking
+API. Add `tls_open`, `tls_poll`, `tls_send`, `tls_recv`, `tls_free`,
+`tls_conn_error` and `tls_open_error` to that list in `hmofet/unodos`, and
+**run `pc64/tools/gate.sh` there** - a one-line kernel export is the exact
+change that gated green here and did not compile in pc64 on 2026-08-21.
 
 - **Done when:** the same core code reaches api.anthropic.com from pc64 and
   from all three desktop targets; certificate validation is not disableable
