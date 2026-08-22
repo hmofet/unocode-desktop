@@ -22,7 +22,9 @@ daily driver on Windows, Linux and macOS. What exists:
   memory, process count and disk by large multiples.
 
 **Tier A and Tier 1 are COMPLETE (UCD-44..51, UCD-11..20, 2026-08-21).
-Start with Tier 2.** The
+Tier 2 is in progress: UCD-21 is done, so `async`/`await` and real Promises
+work everywhere - which is what UCD-22's LSP client needs somewhere to land
+its responses. Start with UCD-22.** The
 assistant is what the product is going to be shown doing, and every layer of
 it now exists: the editor lives here (44), the network seam (45), the HTTP +
 SSE client (46), nothing blocking the frame (47), a key that is not in a
@@ -612,7 +614,8 @@ This is the largest single block of what people mean by "VS Code", and it is
 mostly one dependency chain. UCD-21 is the foundation for all of it.
 
 ### UCD-21: real Promises and an event loop in unojs `[UPSTREAM]`
-**Status:** open · **Size:** L
+**Status:** done (microtask queue + `await` as a real coroutine suspension;
+unojs 96/96; deviation #1 deleted from UNOCODE.md) · **Size:** L
 
 `showQuickPick`/`showInputBox` return thenables because there is no microtask
 queue; real extensions are `async`/`await` throughout, and an LSP client needs

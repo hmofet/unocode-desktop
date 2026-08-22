@@ -135,8 +135,8 @@ vscode.commands.getCommands()                // -> [id, ...]
 
 vscode.window.showInformationMessage(msg)    // also Warning / Error
 vscode.window.setStatusBarMessage(msg)
-vscode.window.showQuickPick(items, placeholder)   // -> thenable
-vscode.window.showInputBox(placeholder, value)    // -> thenable
+vscode.window.showQuickPick(items, placeholder)   // -> Promise
+vscode.window.showInputBox(placeholder, value)    // -> Promise
 vscode.window.createOutputChannel(name)      // .append .appendLine .show
 vscode.window.activeTextEditor               // accessor, undefined if none
 
@@ -166,12 +166,12 @@ vscode.languages.registerCompletionItemProvider(selector, provider)
     //   -> [{ label, detail, insertText }] or [string]
 
 // on the context handed to activate(context):
-context.secrets.store(name, value)           // -> thenable
-context.secrets.get(name)                    // -> thenable of string|undefined
-context.secrets.delete(name)                 // -> thenable
+context.secrets.store(name, value)           // -> Promise
+context.secrets.get(name)                    // -> Promise<string|undefined>
+context.secrets.delete(name)                 // -> Promise
 
 // the model - REQUIRES "languageModels" in PACKAGE.JSN "permissions"
-vscode.lm.selectChatModels()                 // -> thenable of [model]
+vscode.lm.selectChatModels()                 // -> Promise<[model]>
 model.sendRequest(messages)                  // -> a response object
     // messages: strings, {role, content} objects, or
     // vscode.LanguageModelChatMessage.User(s) / .Assistant(s)
@@ -184,13 +184,18 @@ vscode.Position(line, character)   vscode.Range(l1, c1, l2, c2)
 console.log / .info / .warn / .error      -> the "Extension Host" output channel
 ```
 
-**Two deliberate deviations, both because of what this machine is:**
+**PROMISES ARE REAL** (UCD-21). Every asynchronous call here returns an actual
+`Promise`: `.then`, `.catch`, `.finally`, `Promise.resolve/reject/all`, and
+`async`/`await` all work, because unojs has a microtask queue and a suspending
+`await` underneath. This paragraph used to be a deviation saying the opposite.
 
-1. **Thenables, not Promises.** `showQuickPick` and `showInputBox` return an
-   object with `.then(cb)`. There is no event loop and no microtask queue to
-   build a real Promise on; `.then` is the part extensions use, and it works.
-   `.catch`, `async`/`await` and `Promise.all` do not exist.
-2. **`require` resolves only `'vscode'`.** There is no module resolver and no
+Reactions run on the next frame, never inside the call that settled them -
+which is the standard's ordering, and the reason an extension can settle a
+promise from a callback without re-entering the interpreter.
+
+**One deliberate deviation, because of what this machine is:**
+
+1. **`require` resolves only `'vscode'`.** There is no module resolver and no
    `node_modules`; anything else throws immediately rather than failing later
    and less clearly.
 
@@ -414,6 +419,9 @@ typed into a *document*.
   platform's own store, the `AI: Set API Key` / `AI: Clear API Key` commands
   with a masked input box, and the store named on screen whenever a key is
   saved. Keys never enter `SETTINGS.JSN`.
+- **1.4** (2026-08-21) Real Promises and `async`/`await` (UCD-21): unojs
+  gained a microtask queue and a suspending `await`, so every asynchronous
+  call in this API returns a genuine Promise and deviation #1 is gone.
 - **1.3** (2026-08-21) Tier 1. The listing seam takes the caller's STRIDE
   rather than a baked-in 16 (UCD-11), so names up to `UC_NAME_MAX` (256)
   cross verbatim and the desktop's FAT-style alias table is gone. Workspace
