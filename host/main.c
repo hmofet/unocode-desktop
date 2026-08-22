@@ -84,6 +84,14 @@ extern int         uc_output_channel(const char *name);
 extern int         uc_output_lines(int ch);
 extern const char *uc_output_line(int ch, int i);
 extern void        uc_lsp_trace_on(void);
+extern int         uc_problems_total(void);
+extern void       *uc_problem_at(int i);
+extern int         uc_problem_line(void *p);
+extern int         uc_problem_col(void *p);
+extern int         uc_problem_endcol(void *p);
+extern int         uc_problem_sev(void *p);
+extern const char *uc_problem_msg(void *p);
+extern const char *uc_problem_file(void *p);
 
 /* re-derive the editor's font metrics after a UI-scale change (uc_edit.c) */
 extern void uc_metrics_init(void);
@@ -509,6 +517,18 @@ static void lsp_report(void)
         int st = uc_lsp_state(s);
         printf("lsp: [%s] state=%s restarts=%d\n", uc_lsp_name(s),
                (st >= 0 && st < 4) ? kState[st] : "?", uc_lsp_restarts(s));
+    }
+    {   /* What actually reached the editor's Problems model - the half the
+         * traffic log cannot show.  A publishDiagnostics arriving is not the
+         * same claim as a squiggle being placeable. */
+        int np = uc_problems_total(), j;
+        printf("lsp: %d problem(s)\n", np);
+        for (j = 0; j < np; j++) {
+            void *p = uc_problem_at(j);
+            printf("lsp# %s:%d:%d-%d sev=%d %s\n", uc_problem_file(p),
+                   uc_problem_line(p), uc_problem_col(p), uc_problem_endcol(p),
+                   uc_problem_sev(p), uc_problem_msg(p));
+        }
     }
     printf("lsp: --- %d traffic lines ---\n", n);
     for (i = 0; i < n; i++) printf("lsp| %s\n", uc_output_line(ch, i));

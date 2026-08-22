@@ -277,16 +277,31 @@ lsp_test() {
         return 0
     fi
     rm -rf build/lsp_ws && mkdir -p build/lsp_ws
-    printf 'int main(void) { return 0; }
-' > build/lsp_ws/MAIN.C
-    ( cd build/lsp_ws && ../../build/unocode --shot ../lsp.ppm         --open MAIN.C --type 'int q = 1;' --save --lsp 6000 . )         > build/lsp.log 2>&1 || true
-    $PY - build/lsp.log <<'EOF'
+    # A file with a real error in it, and an ASTRAL character before the error
+    # on its own line.  The emoji is the whole point of the second line: it is
+    # one code point, TWO UTF-16 units, two cells and four bytes, so the four
+    # ways this codebase counts a column all give different answers there and a
+    # conversion done in the wrong unit stops being invisible.
+    $PY - build/lsp_ws/MAIN.C <<'EOF'
+import io, sys
+E = "\U0001F642"
+io.open(sys.argv[1], "w", encoding="utf-8").write(
+    "int main(void) {\n"
+    "    char *s = \"" + E + E + "\"; int y = bad_name;\n"
+    "    return 0\n"
+    "}\n")
+EOF
+    ( cd build/lsp_ws && ../../build/unocode --shot ../lsp.ppm \
+        --open MAIN.C --type '// edited' --save --lsp 6000 . ) \
+        > build/lsp.log 2>&1 || true
+    $PY - build/lsp.log build/lsp.ppm <<'EOF'
 import sys
 log = open(sys.argv[1], encoding='utf-8', errors='replace').read()
 
 def want(needle, why):
     assert needle in log, "%s (looked for %r)" % (why, needle)
 
+# --- UCD-22: the transport ------------------------------------------------
 want('state=ready',
      "clangd never reached ready - it did not start, or never answered initialize")
 want('"method":"initialize"',       "the client never sent initialize")
@@ -295,15 +310,61 @@ want('"method":"initialized"',      "the client never confirmed initialization")
 want('"method":"textDocument/didOpen"',   "the open document was never sent")
 want('"method":"textDocument/didChange"', "the edit was never sent")
 want('"method":"textDocument/didSave"',   "the save was never sent")
-# The point of full sync: the change carries the TEXT, and it is the edited
-# text.  A didChange that shipped the pre-edit buffer would satisfy every
-# assertion above and be useless.
-assert 'int q = 1;' in log.split('didChange', 1)[1][:2000],     "didChange did not carry the text that was typed"
-# The server answered about the file, which is the only proof the URI we built
-# is one it could actually open.
+# The point of full sync: the change carries the TEXT, and it is the EDITED
+# text.  A didChange that shipped the pre-edit buffer satisfies every
+# assertion above and is useless.
+assert '// edited' in log.split('didChange', 1)[1][:4000], \
+    "didChange did not carry the text that was typed"
 want('publishDiagnostics', "clangd never diagnosed the file - check the URI")
-print("lsp: clangd initialized, opened, and saw an edit (%d traffic lines)"
-      % log.count('lsp| '))
+
+# --- UCD-23: what reached the editor --------------------------------------
+probs = [l for l in log.split('\n') if l.startswith('lsp# ')]
+assert probs, "clangd diagnosed the file but nothing reached the Problems model"
+
+# THE COLUMN UNIT.  "bad_name" is the 29th CHARACTER of line 2 and also the
+# 31st UTF-16 unit and the 35th byte, so this one number distinguishes a
+# correct conversion from both plausible wrong ones.  Written out rather than
+# computed, because a test that derives the expected value the same way the
+# code does agrees with the code and not with reality.
+bad = [p for p in probs if 'bad_name' in p]
+assert bad, "the undeclared identifier was not reported: %r" % probs
+where = bad[0].split()[1]                      # MAIN.C:2:29-37
+assert where.endswith(':2:29-37'), (
+    "wrong column for an error after an astral character: %s\n"
+    "  29 = characters (right), 31 = UTF-16 units, 35 = bytes" % where)
+
+# --- UCD-23: what reached the screen --------------------------------------
+raw = open(sys.argv[2], 'rb').read()
+f, i = [], 2
+while len(f) < 3:
+    while raw[i:i+1].isspace():
+        i += 1
+    j = i
+    while not raw[j:j+1].isspace():
+        j += 1
+    f.append(int(raw[i:j]))
+    i = j
+i += 1
+w, h, _ = f
+px = raw[i:]
+ERR = (244, 71, 71)                            # UC_C_ERROR_FG, dark default
+rows = {}
+for y in range(h):
+    xs = [x for x in range(w)
+          if (px[(y*w+x)*3], px[(y*w+x)*3+1], px[(y*w+x)*3+2]) == ERR]
+    if xs:
+        rows[y] = (len(xs), min(xs), max(xs))
+assert rows, "nothing on screen is error-coloured: no squiggle, no marks"
+# A squiggle is a WIDE run somewhere in the middle of the window; the overview
+# ruler is a narrow run pinned to the right edge. Both, or the feature is half
+# drawn and a screenshot that merely has red in it would not say so.
+squig = [y for y, (n, lo, hi) in rows.items() if n >= 8 and hi < w - 40]
+ruler = [y for y, (n, lo, hi) in rows.items() if lo > w - 20]
+assert squig, "no squiggle in the text: %r" % sorted(rows.items())[:6]
+assert ruler, "no marks on the overview ruler: %r" % sorted(rows.items())[:6]
+print("lsp: clangd initialized, opened, saw an edit; %d problem(s) placed at "
+      "CHARACTER columns, squiggled on %d row(s), %d ruler mark row(s)"
+      % (len(probs), len(squig), len(ruler)))
 EOF
 }
 

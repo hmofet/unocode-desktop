@@ -420,6 +420,30 @@ Four decisions worth knowing before changing anything:
   so on to a 32s cap, its documents are re-opened on the replacement, and the
   backoff resets once it has behaved for a minute.
 
+### 8.1 Columns
+
+There are now **four** ways to count a column in UnoCode, and they agree only on
+tab-free ASCII:
+
+| unit | who uses it | `"    char *s = "🙂🙂"; int y = bad"` |
+|---|---|---|
+| bytes | the buffer, `uc_replace_range` | 34 before `bad` |
+| code points | `uc_col_of` / `uc_offset_of`, `UcProblem.col` | 28 |
+| visual cells | `vcol_of`, the painter and the hit test | 30 |
+| UTF-16 units | **LSP, and nothing else** | 30 |
+
+An emoji is one code point, two UTF-16 units, two cells and four bytes, so a
+conversion done in the wrong unit is correct in every ASCII test and wrong from
+the first non-ASCII character onwards - which reads as "the server's ranges are
+off" rather than as this side's bug. `uc_lsp_pos_to_offset()` and
+`uc_lsp_offset_to_u16()` are the only code that may convert; everything else
+takes a document offset.
+
+`UcProblem` stores **1-based code-point** columns, because that is what
+`uc_offset_of()` consumes and what the Problems panel's click already hands it.
+
+---
+
 ---
 
 ## 9. Testing
@@ -470,6 +494,11 @@ typed into a *document*.
   platform's own store, the `AI: Set API Key` / `AI: Clear API Key` commands
   with a masked input box, and the store named on screen whenever a key is
   saved. Keys never enter `SETTINGS.JSN`.
+- **1.6** (2026-08-21) Diagnostics from language servers (UCD-23): squiggles
+  under the reported range, marks in the minimap and on a new overview ruler,
+  the Problems panel and the status-bar counts fed from real servers, and the
+  counts coloured by severity. `UcProblem` grew an end position and a
+  directory; see section 8.1 for the four column units and which one it stores.
 - **1.5** (2026-08-21) A Language Server Protocol client (UCD-22): servers
   spawned on pipes, JSON-RPC framed over stdio, full-text document sync on a
   quiet timer, and a bounded restart when one dies. No UI yet - section 8

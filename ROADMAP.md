@@ -659,10 +659,41 @@ running it rather than by reading it:
   pc64 link.
 
 ### UCD-23: diagnostics
-**Status:** open · **Size:** M · **Depends:** UCD-22
+**Status:** done (squiggles, minimap and overview-ruler marks, the Problems
+panel fed from real servers, and status-bar counts that carry their severity's
+colour) · **Size:** M · **Depends:** UCD-22
 
 Squiggles in the editor, marks in the minimap and scrollbar, a Problems panel,
 and counts in the status bar (the status bar already reserves `E 0  W 0`).
+
+The description above was written before the code existed and two of its
+assumptions were wrong: the Problems panel and the status-bar counts were
+already live and reading `uc_problems_count()`, so what they needed was a
+producer, severity colour and a click target that is not swallowed by the
+folder-name band beside them.
+
+Four things this actually cost:
+
+- **LSP counts a column in UTF-16 code units** and UnoCode already counted one
+  three other ways: bytes, code points (`uc_col_of`) and visual cells
+  (`vcol_of`, tabs expanded, wide glyphs two). All four agree on ASCII, which
+  is how a conversion bug survives every test written by hand, and diverge on
+  the first emoji - one code point, two UTF-16 units, two cells, four bytes.
+  `uc_lsp_pos_to_offset()` is the only place that knows, and the gate asserts
+  the one column number that distinguishes the right answer from both plausible
+  wrong ones.
+- **A mark drawn under the viewport slider is a mark that disappears when you
+  scroll to it.** The minimap slider is a 28/255 blend, so it does not hide a
+  mark - it shifts its colour - and in a short file it covers the whole
+  minimap. Both rulers draw their marks last.
+- **The overview ruler cannot use the slider's mapping.** The slider's track is
+  shortened by its own height so a slider at the bottom stays visible; a mark
+  placed with that formula sits above the line it points at by up to a slider's
+  worth, which is exactly the distance that makes clicking one land elsewhere.
+- **A diagnostic with no range still has to underline something.** A build
+  prints `file:12:5:` and no width at all. The word at the column is the honest
+  answer; a single cell is invisible and the whole line is a claim the compiler
+  did not make.
 
 ### UCD-24: completions from the language server
 **Status:** open · **Size:** M · **Depends:** UCD-22
