@@ -92,6 +92,13 @@ extern int         uc_problem_endcol(void *p);
 extern int         uc_problem_sev(void *p);
 extern const char *uc_problem_msg(void *p);
 extern const char *uc_problem_file(void *p);
+extern void        uc_suggest_open(void *d, int explicit_req);
+extern int         uc_suggest_count(void);
+extern int         uc_suggest_from_server(void);
+extern const char *uc_suggest_label(int i);
+extern const char *uc_suggest_detail(int i);
+extern const char *uc_suggest_insert(int i);
+extern int         uc_suggest_kind_at(int i);
 
 /* re-derive the editor's font metrics after a UI-scale change (uc_edit.c) */
 extern void uc_metrics_init(void);
@@ -109,6 +116,11 @@ static int         g_do_save;      /* --save, after --type                 */
  * path runs prove nothing about it - the only honest test is to let the clock
  * run and then look. */
 static int         g_lsp_ms;
+/* --suggest: after the language server has settled, ask for completions at the
+ * caret and print what came back.  The suggestion widget is the one piece of
+ * UI whose correctness a screenshot cannot show - the question is what is IN
+ * the list and in what order, not whether a box appeared. */
+static int         g_suggest;
 static float       g_wheel_acc;    /* sub-notch trackpad scroll, UCD-10     */
 static HostGeom    G;              /* window geometry + last session        */
 static const char *g_workdir = ".";
@@ -534,6 +546,22 @@ static void lsp_report(void)
     for (i = 0; i < n; i++) printf("lsp| %s\n", uc_output_line(ch, i));
 }
 
+static void suggest_report(void)
+{
+    static const char *kKind[] = { "text", "method", "function", "variable",
+                                   "class", "keyword", "snippet", "file",
+                                   "property" };
+    int n = uc_suggest_count(), i, k;
+    printf("sug: %d item(s), source=%s\n", n,
+           uc_suggest_from_server() ? "server" : "local");
+    for (i = 0; i < n; i++) {
+        k = uc_suggest_kind_at(i);
+        printf("sug# %-28s [%s] %-8s | %s\n", uc_suggest_label(i),
+               uc_suggest_insert(i),
+               (k >= 0 && k < 9) ? kKind[k] : "?", uc_suggest_detail(i));
+    }
+}
+
 static int shot_mode(const char *out)
 {
     int i;
@@ -551,6 +579,13 @@ static int shot_mode(const char *out)
     if (g_do_save) {
         void *d = uc_doc_active();
         if (d) uc_doc_save(d);
+    }
+    if (g_suggest) {
+        void *d = uc_doc_active();
+        if (d) uc_suggest_open(d, 1);
+        /* the request goes out here; the reply lands a few frames later */
+        lsp_settle(g_lsp_ms ? g_lsp_ms : 2000);
+        suggest_report();
     }
     if (g_lsp_ms) { lsp_settle(g_lsp_ms); lsp_report(); }
     for (i = 0; i < 5; i++) { APP->frame(); UI.ticks++; }
@@ -579,6 +614,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--keys") && i + 1 < argc) g_keys = argv[++i];
         else if (!strcmp(argv[i], "--save")) g_do_save = 1;
         else if (!strcmp(argv[i], "--lsp") && i + 1 < argc) g_lsp_ms = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--suggest")) g_suggest = 1;
         else workdir = argv[i];
     }
 

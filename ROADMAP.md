@@ -696,10 +696,44 @@ Four things this actually cost:
   did not make.
 
 ### UCD-24: completions from the language server
-**Status:** open · **Size:** M · **Depends:** UCD-22
+**Status:** done (server completions replace the scraped words when one
+answers, in the server's order, with its kinds and signatures) · **Size:** M ·
+**Depends:** UCD-22
 
 Replace the word-based suggestions with real ones: detail, kind icons,
 documentation, and insert text. The suggest widget already exists.
+
+The widget did exist, with a kind icon and a detail column already painted, so
+almost none of this was UI. What it cost instead:
+
+- **The widget is synchronous and the protocol is not.** `uc_suggest_open()`
+  has to return with something on screen and the server answers frames later,
+  so the local sources still run and the server's answer *replaces* the list
+  when it lands. Waiting would either block the frame loop or flash the widget
+  empty on every keystroke.
+- **A reply that arrives too late must be thrown away.** Every request carries
+  the generation it was sent in, and a reply whose generation is no longer
+  current is dropped. Tracking "is a request outstanding" instead would accept
+  an old reply that overtook a newer one, and a completion list for a prefix
+  you have already finished typing is not a symptom anyone would blame on
+  ordering.
+- **LSP's `CompletionItemKind` is not UnoCode's `UC_CI_*`.** LSP is 1..25 and
+  starts at Text=1; ours is 0..8 and starts at Text=0, so a straight cast is
+  wrong for every value, not just the ones past the end. There is a table.
+- **The trigger character is read from the server's capabilities**, not
+  assumed: clangd registers `.`, `>`, `:` and `"`, pyright registers `.` and
+  `[`. `triggerKind` decides whether the server offers members or the whole
+  translation unit, so it is worth reporting truthfully.
+- The item buffers were sized for scraped words (label 48, detail 40, insert
+  80). A C++ signature is most of the old detail field on its own, and a
+  truncated completion is worse than none because it *inserts*.
+
+Known simplifications, deliberate: `textEdit.range` is ignored in favour of the
+widget's own word start (they agree for a word completion, and honouring a
+range computed before the user kept typing would not); `snippetSupport` stays
+false, so a function completes to its name without a parameter placeholder; and
+superseded requests are not cancelled with `$/cancelRequest` - the reply is
+dropped instead, which costs the server work nobody wanted.
 
 ### UCD-25: hover
 **Status:** open · **Size:** S · **Depends:** UCD-22

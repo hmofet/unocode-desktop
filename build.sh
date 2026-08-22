@@ -368,13 +368,76 @@ print("lsp: clangd initialized, opened, saw an edit; %d problem(s) placed at "
 EOF
 }
 
+
+# ---- completions from a language server (UCD-24) ----------------------------
+# A second run, on its own fixture: the question here is what is IN the list and
+# in what order, which no screenshot can answer, so the editor prints the list
+# and this reads it.
+#
+# The fixture is a struct member access, because it is the one completion whose
+# answer the word scraper CANNOT fake: `px`, `py` and `weight` are the fields of
+# the type of `p`, and knowing that requires having parsed the file.
+sug_test() {
+    if ! command -v clangd >/dev/null 2>&1; then
+        echo "sug_test: SKIPPED - no clangd on PATH" >&2
+        return 0
+    fi
+    rm -rf build/sug_ws && mkdir -p build/sug_ws
+    cat > build/sug_ws/SUG.C <<'CEOF'
+struct Point { int px; int py; double weight; };
+static int helper_fn(int a) { return a; }
+int main(void) {
+    struct Point p;
+    p.
+    return helper_fn(0);
+}
+CEOF
+    # five Downs and an End puts the caret just after the `.` on line 5
+    ( cd build/sug_ws && ../../build/unocode --shot ../sug.ppm \
+        --open SUG.C --keys 'DDDDE' --lsp 6000 --suggest . ) \
+        > build/sug.log 2>&1 || true
+    $PY - build/sug.log <<'EOF'
+import sys
+log = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+rows = [l for l in log.split('\n') if l.startswith('sug# ')]
+head = [l for l in log.split('\n') if l.startswith('sug: ')]
+assert head, "the suggestion widget never reported: %r" % log[-400:]
+assert 'source=server' in head[0], (
+    "the completions came from the WORD SCRAPER, not from clangd: %s\n"
+    "  (a local list here would contain px/py/weight too, scraped from the "
+    "struct declaration three lines up - which is exactly why the source "
+    "matters and the labels alone would not have caught it)" % head[0])
+
+labels = [r[5:].split()[0] for r in rows]
+for want in ('px', 'py', 'weight'):
+    assert want in labels, "clangd did not offer %r: %r" % (want, labels)
+# ONLY the members. A word-scraped list would also carry `helper_fn`, `main`,
+# `Point` and `struct`, so their absence is the proof that the answer came from
+# something that understands the language.
+for unwanted in ('helper_fn', 'main', 'Point', 'struct'):
+    assert unwanted not in labels, (
+        "%r is not a member of Point but was offered: %r" % (unwanted, labels))
+# The server's ORDER, not the fuzzy matcher's. clangd returns declaration
+# order here; a re-sort by prefix score would be free to reorder them, and the
+# prefix is empty so every score would tie.
+assert labels[:3] == ['px', 'py', 'weight'], \
+    "the server's order was not preserved: %r" % labels
+# Kind and detail, both of which the word scraper has no way to know.
+assert 'property' in rows[0], "field kind was lost: %r" % rows[0]
+assert rows[0].rstrip().endswith('int'), \
+    "the field's type did not come through as detail: %r" % rows[0]
+print("lsp: clangd completed a struct member - %d item(s), server order, "
+      "kinds and types intact" % len(rows))
+EOF
+}
+
 case "${1:-}" in
     --windows) build_windows ;;
     --test)    core_test; utf8_test; fs_test; clip_test; dialog_test
                secret_test ;;
-    --lsp)     build_native; lsp_test ;;
+    --lsp)     build_native; lsp_test; sug_test ;;
     --gate)    core_test; build_native; utf8_test; fs_test; clip_test
                dialog_test; secret_test; net_test; http_test; gate; utf8_gate
-               lsp_test ;;
+               lsp_test; sug_test ;;
     *)         build_native ;;
 esac
