@@ -632,13 +632,114 @@ print("lsp: clangd found the definition (and Alt+Left came back to the exact "
 EOF
 }
 
+
+# ---- rename and format (UCD-27) ---------------------------------------------
+# Everything here is checked by reading the FILES afterwards, not by counting
+# edits. A count is satisfied by edits applied in the wrong order, which is the
+# one mistake this code can actually make: a TextEdit's range is stated against
+# the document as the server saw it, so applying them front to back invalidates
+# every range after the first one that changed a length.
+edit_test() {
+    if ! command -v clangd >/dev/null 2>&1; then
+        echo "edit_test: SKIPPED - no clangd on PATH" >&2
+        return 0
+    fi
+    rm -rf build/edit_ws && mkdir -p build/edit_ws/sub
+    printf 'int shared_thing(int a);\n' > build/edit_ws/sub/lib.h
+    printf '#include "sub/lib.h"\nint shared_thing(int a) { return a * 2; }\n' \
+        > build/edit_ws/lib.c
+    cat > build/edit_ws/use.c <<'CEOF'
+#include "sub/lib.h"
+int main(void) {
+    int x = shared_thing(1);
+    int y = shared_thing(2);
+    return x + y;
+}
+CEOF
+    # Deliberately mangled: wrong spacing on line 1, no indent on line 2, too
+    # much on line 3. Three separate edits at three different lengths, so an
+    # order mistake shows up as mangled text rather than as a near-miss.
+    printf 'int   messy(int a){\nint b=a+1;\n      return b;\n}\n' \
+        > build/edit_ws/messy.c
+    $PY - build/edit_ws <<'EOF'
+import json, os, sys
+d = os.path.abspath(sys.argv[1])
+db = [{"directory": d, "file": os.path.join(d, f),
+       "command": "cc -I. -std=c11 -c " + f}
+      for f in ("use.c", "lib.c", "messy.c")]
+open(os.path.join(d, "compile_commands.json"), "w").write(json.dumps(db))
+EOF
+
+    ( cd build/edit_ws && ../../build/unocode --shot ../edit.ppm \
+        --open use.c --keys 'DDELLLLL' --lsp 12000 --rename renamed_thing . ) \
+        > build/edit.log 2>&1 || true
+    ( cd build/edit_ws && ../../build/unocode --shot ../edit2.ppm \
+        --open messy.c --lsp 8000 --format . ) \
+        > build/edit2.log 2>&1 || true
+    # Format on save, forced for this run only - a test that edited the real
+    # SETTINGS.JSN would damage the machine it runs on and would leave it
+    # configured differently depending on whether it passed.
+    printf 'int   ugly(int a){\nint b=a+1;\n      return b;\n}\n' \
+        > build/edit_ws/onsave.c
+    ( cd build/edit_ws && ../../build/unocode --shot ../edit3.ppm \
+        --open onsave.c --save --set editor.formatOnSave=true --lsp 8000 . ) \
+        > build/edit3.log 2>&1 || true
+    # ...and the control: the same file, the same save, the setting off.
+    printf 'int   ugly2(int a){\nint b=a+1;\n      return b;\n}\n' \
+        > build/edit_ws/nosave.c
+    ( cd build/edit_ws && ../../build/unocode --shot ../edit4.ppm \
+        --open nosave.c --save --set editor.formatOnSave=false --lsp 8000 . ) \
+        > build/edit4.log 2>&1 || true
+
+    $PY - build/edit_ws build/edit.log <<'EOF'
+import os, sys
+ws = sys.argv[1]
+log = open(sys.argv[2], encoding='utf-8', errors='replace').read()
+
+def read(p):
+    return open(os.path.join(ws, p), encoding='utf-8').read()
+
+# --- rename: the FILES, in all three places the symbol lived --------------
+for path, n in (('use.c', 2), ('lib.c', 1), (os.path.join('sub', 'lib.h'), 1)):
+    body = read(path)
+    assert body.count('renamed_thing') == n, \
+        "%s has %d occurrences of the new name, expected %d:\n%s" % (
+            path, body.count('renamed_thing'), n, body)
+    assert 'shared_thing' not in body, \
+        "%s still contains the old name:\n%s" % (path, body)
+assert 'ren: 3 file(s) edited, 0 unsaved' in log, \
+    "the rename did not report three files written: %s" % log[-300:]
+
+# --- format: the exact text, because an ORDER mistake is the failure ------
+got = read('messy.c')
+want = 'int messy(int a) {\n  int b = a + 1;\n  return b;\n}\n'
+assert got == want, (
+    "clang-format's edits did not come out right. Applying a server's edits "
+    "front to back instead of last first mangles them, and the damage is "
+    "proportional to how much earlier edits changed the length:\n"
+    "  got:  %r\n  want: %r" % (got, want))
+
+# --- format on save, and its control --------------------------------------
+on = read('onsave.c')
+assert on.startswith('int ugly(int a) {'), \
+    "editor.formatOnSave did not format before writing:\n%s" % on
+off = read('nosave.c')
+assert off.startswith('int   ugly2(int a){'), (
+    "the file was formatted with editor.formatOnSave turned OFF - the setting "
+    "is not being read:\n%s" % off)
+print("lsp: clangd renamed a symbol across 3 files, formatted a mangled one "
+      "byte-exact, and honoured editor.formatOnSave both ways")
+EOF
+}
+
 case "${1:-}" in
     --windows) build_windows ;;
     --test)    core_test; utf8_test; fs_test; clip_test; dialog_test
                secret_test ;;
-    --lsp)     build_native; lsp_test; sug_test; hov_test; nav_test ;;
+    --lsp)     build_native; lsp_test; sug_test; hov_test; nav_test
+               edit_test ;;
     --gate)    core_test; build_native; utf8_test; fs_test; clip_test
                dialog_test; secret_test; net_test; http_test; gate; utf8_gate
-               lsp_test; sug_test; hov_test; nav_test ;;
+               lsp_test; sug_test; hov_test; nav_test; edit_test ;;
     *)         build_native ;;
 esac

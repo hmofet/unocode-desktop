@@ -801,9 +801,41 @@ actually feel.
   return from is why people keep the previous file's tab pinned in their head.
 
 ### UCD-27: rename symbol, and format document
-**Status:** open · **Size:** M · **Depends:** UCD-22
+**Status:** done (F2 renames across every file the server names, Shift+Alt+F
+formats, and `editor.formatOnSave` formats before writing rather than after) ·
+**Size:** M · **Depends:** UCD-22
 
 Format on save is the setting most people turn on first.
+
+- **Edits are applied last first, and that is the whole difficulty.** A
+  `TextEdit`'s range is stated against the document as the server saw it, so
+  applying them front to back invalidates every range after the first one that
+  changed a length - by a different amount each time. Sorting descending by
+  start offset means no edit ever moves text a later-applied edit still has to
+  address. They also arrive *unsorted*: the protocol requires only that edits
+  in one array do not overlap.
+- **A `WorkspaceEdit` comes in two shapes**, `changes` (an object of URI to
+  edits) and `documentChanges` (an array of `TextDocumentEdit`). Servers pick
+  based on what the client claimed to support, and this one claimed nothing, so
+  both are read.
+- **One undo step per file**, the same rule Replace All follows: a rename
+  needing forty presses of Ctrl+Z to reverse is a trap, not a feature. The
+  files are left open and dirty rather than saved, for the same reason.
+- **Format on save formats *then* saves.** Saving first and formatting after
+  would write the file twice and leave it dirty immediately after a save -
+  the one moment a user is entitled to believe the file on disk is what they
+  are looking at. Only the explicit Ctrl+S formats: `files.autoSave` fires on
+  a timer, and a formatter reflowing the file under the caret a second after
+  you stop typing is nobody's idea of a feature.
+- The format request sends the **editor's** `tabSize` and `insertSpaces`. A
+  formatter told nothing reformats the whole file to its own house style on the
+  first save, which is the diff nobody wanted.
+
+Also added along the way: `uc_cfg_override()`, the in-memory half of
+`uc_cfg_set()`, and a `--set key=value` for the headless driver. A gate that
+had to edit the real `SETTINGS.JSN` to exercise a setting would damage the
+machine it runs on, and would leave that machine configured differently
+depending on whether it passed.
 
 ### UCD-28: `[UPSTREAM]` TextMate fidelity
 **Status:** open · **Size:** L

@@ -29,6 +29,18 @@
  *   unocode --lsp <ms>         headless: run real frames for <ms> before and
  *                              after the typing, then print what the language
  *                              -server client did, traffic and all
+ *   unocode --set k=v           override one setting for this run only
+ *   unocode --suggest          ask for completions at the caret and print them
+ *   unocode --hover            ask for a hover at the caret and print it
+ *   unocode --def              go to definition, then Alt+Left and Alt+Right
+ *   unocode --refs             find all references and print them
+ *   unocode --rename <name>    rename the symbol at the caret
+ *   unocode --format           format the document
+ *
+ * The language-feature hands all print rather than paint, because what they
+ * have to prove is CONTENT - which completion, at which column, in whose order
+ * - and a screenshot cannot answer any of that.  --hover is the exception, and
+ * the gate diffs two runs to check it is drawn at all.
  *
  * --type/--keys/--save are the gate's hands, as --shot is its eyes: a
  * screenshot can say the workbench painted, but only typing and saving can say
@@ -111,6 +123,11 @@ extern int         uc_results_count(void);
 extern const char *uc_results_path(int i);
 extern int         uc_results_line(int i);
 extern const char *uc_results_text(int i);
+extern void        uc_rename_symbol(void *d);
+extern void        uc_format_document(void *d);
+extern int         uc_save_with_format(void *d);
+extern void        uc_cfg_override(const char *key, const char *val);
+extern int         uc_quick_key(int key, int mods, int ch);
 extern int         uc_doc_title(void *d, char *out, int cap);
 extern int         uc_line_of(void *d, int off);
 extern int         uc_col_of(void *d, int off);
@@ -143,6 +160,15 @@ static int         g_hover;
  * Alt+Right afterwards, because the navigation stack is the half of "go to
  * definition" that a user actually feels and it has no other way to be seen. */
 static int         g_def, g_refs;
+/* --rename <name> / --format: drive UCD-27.  Both write their result to disk
+ * afterwards, because the claim worth checking is what the FILES say - an edit
+ * count is satisfied by edits applied in the wrong order. */
+static const char *g_rename;
+static int         g_format;
+/* --set key=jsonvalue, repeatable: override a setting for this run only, so a
+ * test can exercise one without editing the user's real SETTINGS.JSN. */
+static const char *g_set[8];
+static int         g_nset;
 static float       g_wheel_acc;    /* sub-notch trackpad scroll, UCD-10     */
 static HostGeom    G;              /* window geometry + last session        */
 static const char *g_workdir = ".";
@@ -600,10 +626,29 @@ static void where(const char *tag)
            uc_line_of(d, off) + 1, uc_col_of(d, off) + 1);
 }
 
+/* Apply every --set, after boot (which loads the real settings) and before
+ * anything reads one. */
+static void apply_overrides(void)
+{
+    int i;
+    for (i = 0; i < g_nset; i++) {
+        const char *eq = strchr(g_set[i], '=');
+        char key[64];
+        int n;
+        if (!eq) continue;
+        n = (int)(eq - g_set[i]);
+        if (n <= 0 || n >= (int)sizeof key) continue;
+        memcpy(key, g_set[i], (unsigned long)n);
+        key[n] = 0;
+        uc_cfg_override(key, eq + 1);
+    }
+}
+
 static int shot_mode(const char *out)
 {
     int i;
     boot_app();
+    apply_overrides();
     /* Lay the workbench out BEFORE typing into it.  uc_edit_reveal() scrolls
      * the caret into view against the editor's rect, and until something has
      * painted, that rect is empty - so it computes "one column fits" and
@@ -616,7 +661,10 @@ static int shot_mode(const char *out)
     if (g_lsp_ms) lsp_settle(g_lsp_ms);       /* the debounce, then didChange */
     if (g_do_save) {
         void *d = uc_doc_active();
-        if (d) uc_doc_save(d);
+        /* Through the SAME path Ctrl+S takes, so editor.formatOnSave is
+         * exercised by the hand as well as by the key.  A test hand that
+         * bypassed the command would test a save nobody ever performs. */
+        if (d && !uc_save_with_format(d)) uc_doc_save(d);
     }
     if (g_suggest) {
         void *d = uc_doc_active();
@@ -660,6 +708,35 @@ static int shot_mode(const char *out)
                        uc_results_line(j), uc_results_text(j));
         }
     }
+    if (g_rename) {
+        void *d = uc_doc_active();
+        int k;
+        if (d) uc_rename_symbol(d);
+        /* The box opens PRE-FILLED with the symbol as it stands, so typing
+         * would append to it.  Clear it first, then type, then Enter - which
+         * is what a user does too. */
+        for (k = 0; k < 80; k++) uc_quick_key(UI_KEY_BACKSPACE, 0, 0);
+        type_text(g_rename);
+        uc_quick_key(UI_KEY_ENTER, 0, 0);
+        lsp_settle(g_lsp_ms ? g_lsp_ms : 3000);
+        {   /* uc_host_save_all() returns what it could NOT save, so 0 is
+             * success.  Both numbers are printed because "3 files changed" and
+             * "0 of them refused to write" are different claims. */
+            int edited = uc_host_dirty_count();
+            int left = uc_host_save_all();
+            printf("ren: %d file(s) edited, %d unsaved\n", edited, left);
+        }
+    }
+    if (g_format) {
+        void *d = uc_doc_active();
+        if (d) uc_format_document(d);
+        lsp_settle(g_lsp_ms ? g_lsp_ms : 3000);
+        {
+            int edited = uc_host_dirty_count();
+            int left = uc_host_save_all();
+            printf("fmt: %d file(s) edited, %d unsaved\n", edited, left);
+        }
+    }
     if (g_lsp_ms) { lsp_settle(g_lsp_ms); lsp_report(); }
     for (i = 0; i < 5; i++) { APP->frame(); UI.ticks++; }
     render_frame();
@@ -691,6 +768,12 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--hover")) g_hover = 1;
         else if (!strcmp(argv[i], "--def")) g_def = 1;
         else if (!strcmp(argv[i], "--refs")) g_refs = 1;
+        else if (!strcmp(argv[i], "--rename") && i + 1 < argc) g_rename = argv[++i];
+        else if (!strcmp(argv[i], "--format")) g_format = 1;
+        else if (!strcmp(argv[i], "--set") && i + 1 < argc) {
+            if (g_nset < 8) g_set[g_nset++] = argv[++i];
+            else i++;
+        }
         else workdir = argv[i];
     }
 
@@ -720,6 +803,7 @@ int main(int argc, char **argv)
     tex = 0;
 
     boot_app();
+    apply_overrides();
     sync_dpi(win, ren, &tex);       /* AFTER boot: it re-derives font metrics */
     /* Reopen last session's editors, but only for the SAME folder: the tab
      * list is workspace-relative, and replaying it against a different tree
