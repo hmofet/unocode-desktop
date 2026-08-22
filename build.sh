@@ -537,13 +537,108 @@ print("lsp: clangd hovered a symbol (signature + doc comment, markdown "
 EOF
 }
 
+
+# ---- definition, references, navigation (UCD-26) ----------------------------
+# The fixture is deliberately THREE files with one in a subdirectory, because
+# the interesting half of this task is turning a server's `file://` URI back
+# into the editor's (volume, directory, name) addressing. A single-file test
+# would pass with that conversion returning the input.
+#
+# It needs a compilation database: without one clangd indexes only the open
+# translation unit and finds two of the four references, which would make this
+# test quietly weaker rather than fail.
+nav_test() {
+    if ! command -v clangd >/dev/null 2>&1; then
+        echo "nav_test: SKIPPED - no clangd on PATH" >&2
+        return 0
+    fi
+    rm -rf build/nav_ws && mkdir -p build/nav_ws/sub
+    printf 'int shared_thing(int a);\n' > build/nav_ws/sub/lib.h
+    printf '#include "sub/lib.h"\nint shared_thing(int a) { return a * 2; }\n' \
+        > build/nav_ws/lib.c
+    cat > build/nav_ws/use.c <<'CEOF'
+#include "sub/lib.h"
+int main(void) {
+    int x = shared_thing(1);
+    int y = shared_thing(2);
+    return x + y;
+}
+CEOF
+    $PY - build/nav_ws <<'EOF'
+import json, os, sys
+d = os.path.abspath(sys.argv[1])
+db = [{"directory": d, "file": os.path.join(d, f),
+       "command": "cc -I. -std=c11 -c " + f} for f in ("use.c", "lib.c")]
+open(os.path.join(d, "compile_commands.json"), "w").write(json.dumps(db))
+EOF
+    # two Downs, End, five Lefts lands the caret inside `shared_thing` on line 3
+    ( cd build/nav_ws && ../../build/unocode --shot ../nav.ppm \
+        --open use.c --keys 'DDELLLLL' --lsp 12000 --def . ) \
+        > build/nav.log 2>&1 || true
+    ( cd build/nav_ws && ../../build/unocode --shot ../nav2.ppm \
+        --open use.c --keys 'DDELLLLL' --lsp 12000 --refs . ) \
+        > build/nav2.log 2>&1 || true
+    $PY - build/nav.log build/nav2.log <<'EOF'
+import sys
+nav = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+ref = open(sys.argv[2], encoding='utf-8', errors='replace').read()
+
+def line(log, tag):
+    for l in log.split('\n'):
+        if l.startswith('nav: ' + tag + ' '):
+            return l[5 + len(tag) + 1:].strip()
+    return None
+
+there = line(nav, 'def')
+back  = line(nav, 'back')
+fwd   = line(nav, 'fwd')
+# EITHER exact answer is right, and which one depends on what clangd knows:
+# with a compilation database it prefers the DEFINITION in lib.c, without one
+# it can only offer the DECLARATION in lib.h. Both are pinned to a line AND a
+# column rather than to a file, because landing in the right file at the wrong
+# place is the failure this feature actually has.
+assert there in ('lib.c:2:5', 'lib.h:1:5'), \
+    "Go to Definition landed nowhere useful: %r\n%s" % (there, nav[-400:])
+
+# The navigation stack. Back must return to the exact caret it left - the same
+# FILE would pass a weaker check while silently losing the line and column,
+# which is the whole reason the stack stores a position rather than a document.
+assert back == 'use.c:3:24', \
+    "Alt+Left did not come back to where the jump started: %r\n%s" % (back, nav)
+assert fwd == there, \
+    "Alt+Right did not return to the definition: %r (went to %r)" % (there, fwd)
+
+rows = [l[5:] for l in ref.split('\n') if l.startswith('ref# ')]
+assert len(rows) == 4, \
+    "expected 4 references (two calls, the definition, the declaration), got " \
+    "%d: %r" % (len(rows), rows)
+paths = [r.split(':')[0] for r in rows]
+assert 'use.c' in paths and 'lib.c' in paths, \
+    "references did not cross files: %r" % paths
+# The SUBDIRECTORY one, in the core's own backslash dialect. This is the row
+# that proves the URI came back as (volume, directory, name) and not as a path
+# that happens to end in the right name.
+assert any(p == 'sub\\lib.h' for p in paths), \
+    "the reference in a subdirectory was lost or mis-spelled: %r" % paths
+# Every row carries its line's text. A results list of blank rows is a list
+# nobody can read, and three of these four files are not open.
+for r in rows:
+    body = r.split('  ', 1)
+    assert len(body) == 2 and body[1].strip(), \
+        "a reference row has no preview text: %r" % r
+print("lsp: clangd found the definition (and Alt+Left came back to the exact "
+      "caret), and %d references across %d files including a subdirectory"
+      % (len(rows), len(set(paths))))
+EOF
+}
+
 case "${1:-}" in
     --windows) build_windows ;;
     --test)    core_test; utf8_test; fs_test; clip_test; dialog_test
                secret_test ;;
-    --lsp)     build_native; lsp_test; sug_test; hov_test ;;
+    --lsp)     build_native; lsp_test; sug_test; hov_test; nav_test ;;
     --gate)    core_test; build_native; utf8_test; fs_test; clip_test
                dialog_test; secret_test; net_test; http_test; gate; utf8_gate
-               lsp_test; sug_test; hov_test ;;
+               lsp_test; sug_test; hov_test; nav_test ;;
     *)         build_native ;;
 esac

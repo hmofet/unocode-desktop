@@ -765,10 +765,40 @@ other assertion reads a flag and a string, and a popup whose painter had been
 clipped out of existence would satisfy all of them.
 
 ### UCD-26: go to definition, and find all references
-**Status:** open · **Size:** M · **Depends:** UCD-22
+**Status:** done (F12, Shift+F12, and a browser-style history on Alt+Left /
+Alt+Right that every jump in the workbench now goes through) · **Size:** M ·
+**Depends:** UCD-22
 
 Includes the navigation stack (Alt+Left / Alt+Right), which is the part people
 actually feel.
+
+- **The navigation stack is a browser history, not a stack.** A stack lets you
+  go back and never forward, so one press too many is unrecoverable. The
+  current position is an index into a list; only a *new* jump truncates what is
+  ahead. A location is a path and a line, never a `UcDoc *` - documents live in
+  a shifting array and are closed while history still refers to them, so
+  history survives closing the tab, which is exactly when you want it.
+- **Recording where you are had to be separate from moving.** Go to Definition
+  must open the target before it can convert the server's UTF-16 column, and by
+  then "where we are" *is* the target: the entry gets written describing the
+  destination, and the arrival is then skipped as a duplicate of it. The
+  symptom is indistinguishable from history not being recorded at all.
+  `uc_nav_mark()` and `uc_nav_to()` are the two halves.
+- **A location comes back in three shapes**: a `Location`, an array of them, or
+  an array of `LocationLink`, which spells the fields `targetUri` and
+  `targetSelectionRange` instead. A client that handled only the shape it first
+  saw would work perfectly against one server and silently do nothing against
+  the next.
+- **A definition outside the workspace is a real answer, not a failure.** Go to
+  Definition on `printf` lands in `/usr/include`, which the editor cannot open
+  because it addresses files by volume. It says so and names the file.
+- References reuse the **Search view** rather than getting a panel of their
+  own: same grouping by file, same rows, same clicks. A second panel would have
+  been a second scroll model and a second set of row arithmetic to show the
+  same shape of answer.
+- Every jump in the workbench now goes through the history - the Search
+  results, the Problems panel, and Go to Definition - because a jump you cannot
+  return from is why people keep the previous file's tab pinned in their head.
 
 ### UCD-27: rename symbol, and format document
 **Status:** open · **Size:** M · **Depends:** UCD-22

@@ -103,6 +103,17 @@ extern void        uc_hover_at(void *d, int off, int px, int py);
 extern int         uc_hover_active(void);
 extern const char *uc_hover_text(void);
 extern int         uc_doc_caret(void *d);
+extern void        uc_goto_definition(void *d);
+extern void        uc_find_references(void *d);
+extern int         uc_nav_back(void);
+extern int         uc_nav_forward(void);
+extern int         uc_results_count(void);
+extern const char *uc_results_path(int i);
+extern int         uc_results_line(int i);
+extern const char *uc_results_text(int i);
+extern int         uc_doc_title(void *d, char *out, int cap);
+extern int         uc_line_of(void *d, int off);
+extern int         uc_col_of(void *d, int off);
 
 /* re-derive the editor's font metrics after a UI-scale change (uc_edit.c) */
 extern void uc_metrics_init(void);
@@ -128,6 +139,10 @@ static int         g_suggest;
 /* --hover: ask the server about the symbol at the caret and print the answer.
  * At the CARET, not at the pointer: a headless run has no pointer to rest. */
 static int         g_hover;
+/* --def / --refs: drive UCD-26 headlessly.  --def also presses Alt+Left and
+ * Alt+Right afterwards, because the navigation stack is the half of "go to
+ * definition" that a user actually feels and it has no other way to be seen. */
+static int         g_def, g_refs;
 static float       g_wheel_acc;    /* sub-notch trackpad scroll, UCD-10     */
 static HostGeom    G;              /* window geometry + last session        */
 static const char *g_workdir = ".";
@@ -569,6 +584,22 @@ static void suggest_report(void)
     }
 }
 
+/* Where the caret is now, as file:line:col - the only way a headless run can
+ * say that a jump landed, and the only way it can say that Alt+Left came back
+ * to the place it left rather than merely to the same file. */
+static void where(const char *tag)
+{
+    void *d = uc_doc_active();
+    char title[64];
+    int off;
+    if (!d) { printf("nav: %s no document\n", tag); return; }
+    title[0] = 0;
+    uc_doc_title(d, title, sizeof title);
+    off = uc_doc_caret(d);
+    printf("nav: %s %s:%d:%d\n", tag, title,
+           uc_line_of(d, off) + 1, uc_col_of(d, off) + 1);
+}
+
 static int shot_mode(const char *out)
 {
     int i;
@@ -606,6 +637,29 @@ static int shot_mode(const char *out)
             printf("\n");
         }
     }
+    if (g_def) {
+        void *d = uc_doc_active();
+        if (d) uc_goto_definition(d);
+        lsp_settle(g_lsp_ms ? g_lsp_ms : 2000);
+        where("def");
+        /* and back, and forward again: the stack is what makes the jump usable */
+        if (uc_nav_back()) { lsp_settle(300); where("back"); }
+        else printf("nav: back refused\n");
+        if (uc_nav_forward()) { lsp_settle(300); where("fwd"); }
+        else printf("nav: forward refused\n");
+    }
+    if (g_refs) {
+        void *d = uc_doc_active();
+        if (d) uc_find_references(d);
+        lsp_settle(g_lsp_ms ? g_lsp_ms : 2000);
+        {
+            int n = uc_results_count(), j;
+            printf("ref: %d result(s)\n", n);
+            for (j = 0; j < n; j++)
+                printf("ref# %s:%d  %s\n", uc_results_path(j),
+                       uc_results_line(j), uc_results_text(j));
+        }
+    }
     if (g_lsp_ms) { lsp_settle(g_lsp_ms); lsp_report(); }
     for (i = 0; i < 5; i++) { APP->frame(); UI.ticks++; }
     render_frame();
@@ -635,6 +689,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--lsp") && i + 1 < argc) g_lsp_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--suggest")) g_suggest = 1;
         else if (!strcmp(argv[i], "--hover")) g_hover = 1;
+        else if (!strcmp(argv[i], "--def")) g_def = 1;
+        else if (!strcmp(argv[i], "--refs")) g_refs = 1;
         else workdir = argv[i];
     }
 
