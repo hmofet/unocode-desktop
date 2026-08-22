@@ -431,13 +431,119 @@ print("lsp: clangd completed a struct member - %d item(s), server order, "
 EOF
 }
 
+
+# ---- hover (UCD-25) ---------------------------------------------------------
+# Four runs, because "a hover appeared" is three separate claims.
+#
+#   1. It says the right thing about a symbol.
+#   2. It does NOT appear where there is nothing to say - a popup that opens
+#      over whitespace is the behaviour that makes people turn hovers off - and
+#      not at all for a file no server serves.
+#   3. It is actually PAINTED. Every assertion in (1) reads a state flag and a
+#      string, and a popup whose painter was clipped out of existence would
+#      satisfy all of them. The control run is identical but for --hover, so
+#      the pixels that differ between the two ARE the popup.
+hov_test() {
+    if ! command -v clangd >/dev/null 2>&1; then
+        echo "hov_test: SKIPPED - no clangd on PATH" >&2
+        return 0
+    fi
+    rm -rf build/hov_ws && mkdir -p build/hov_ws
+    cat > build/hov_ws/HOV.C <<'CEOF'
+/** Adds one to a number. */
+static int helper_fn(int a) { return a + 1; }
+int main(void) {
+    return helper_fn(2);
+}
+CEOF
+    printf 'alpha beta\n' > build/hov_ws/NOTES.TXT
+    # three Downs, End, then ten Lefts lands the caret inside `helper_fn`
+    ( cd build/hov_ws && ../../build/unocode --shot ../hov.ppm \
+        --open HOV.C --keys 'DDDELLLLLLLLLL' --lsp 6000 --hover . ) \
+        > build/hov.log 2>&1 || true
+    # the CONTROL: same file, same keys, same waits, no --hover
+    ( cd build/hov_ws && ../../build/unocode --shot ../hovctl.ppm \
+        --open HOV.C --keys 'DDDELLLLLLLLLL' --lsp 6000 . ) \
+        > build/hovctl.log 2>&1 || true
+    # the caret left on a line with nothing to say about it
+    ( cd build/hov_ws && ../../build/unocode --shot ../hov2.ppm \
+        --open HOV.C --keys 'DDD' --lsp 6000 --hover . ) \
+        > build/hov2.log 2>&1 || true
+    # a file no server serves at all
+    ( cd build/hov_ws && ../../build/unocode --shot ../hov3.ppm \
+        --open NOTES.TXT --lsp 2000 --hover . ) \
+        > build/hov3.log 2>&1 || true
+    $PY - build/hov.log build/hov2.log build/hov3.log \
+          build/hov.ppm build/hovctl.ppm <<'EOF'
+import sys
+on   = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+off  = open(sys.argv[2], encoding='utf-8', errors='replace').read()
+none = open(sys.argv[3], encoding='utf-8', errors='replace').read()
+
+assert 'hov: shown' in on, \
+    "no hover over an identifier clangd knows: %s" % on[-500:]
+body = '\n'.join(l[5:] for l in on.split('\n') if l.startswith('hov| '))
+assert 'helper_fn' in body, "the hover did not name the symbol: %r" % body
+assert 'int a' in body, "the signature did not come through: %r" % body
+# The DOC COMMENT is the part that proves this came from something that parsed
+# the file rather than from the identifier itself.
+assert 'Adds one to a number' in body, \
+    "clangd's doc comment was lost: %r" % body
+# Markdown is stripped, not rendered. A fence left in would show as ``` on its
+# own line, which is worse than plain text.
+assert '```' not in body, "a markdown fence survived into the popup: %r" % body
+
+assert 'hov: nothing' in off, \
+    "a hover opened where there is no symbol - the dwell would fire on every " \
+    "blank line the pointer crossed: %s" % off[-300:]
+assert 'hov: nothing' in none, \
+    "a hover opened for a file no language server serves: %s" % none[-300:]
+
+def ppm(path):
+    raw = open(path, 'rb').read()
+    f, i = [], 2
+    while len(f) < 3:
+        while raw[i:i+1].isspace():
+            i += 1
+        j = i
+        while not raw[j:j+1].isspace():
+            j += 1
+        f.append(int(raw[i:j]))
+        i = j
+    return f[0], f[1], raw[i+1:]
+
+w, h, a = ppm(sys.argv[4])
+w2, h2, b = ppm(sys.argv[5])
+assert (w, h) == (w2, h2), "the two runs rendered at different sizes"
+rows = {}
+for y in range(h):
+    xs = [x for x in range(w)
+          if a[(y*w+x)*3:(y*w+x)*3+3] != b[(y*w+x)*3:(y*w+x)*3+3]]
+    if xs:
+        rows[y] = (len(xs), min(xs), max(xs))
+assert rows, ("the hover reported itself shown but changed NOTHING on screen - "
+              "the popup is not being painted")
+ys = sorted(rows)
+# One contiguous block, not scattered pixels: a popup is a box.
+assert ys[-1] - ys[0] + 1 == len(ys), \
+    "the difference is not one contiguous block: rows %r" % ys[:20]
+box_h = len(ys)
+box_w = max(r[2] for r in rows.values()) - min(r[1] for r in rows.values()) + 1
+assert box_h >= 30 and box_w >= 120, \
+    "the popup is too small to be the hover box: %dx%d" % (box_w, box_h)
+print("lsp: clangd hovered a symbol (signature + doc comment, markdown "
+      "stripped), painted a %dx%d popup, and stayed quiet on whitespace "
+      "and on plaintext" % (box_w, box_h))
+EOF
+}
+
 case "${1:-}" in
     --windows) build_windows ;;
     --test)    core_test; utf8_test; fs_test; clip_test; dialog_test
                secret_test ;;
-    --lsp)     build_native; lsp_test; sug_test ;;
+    --lsp)     build_native; lsp_test; sug_test; hov_test ;;
     --gate)    core_test; build_native; utf8_test; fs_test; clip_test
                dialog_test; secret_test; net_test; http_test; gate; utf8_gate
-               lsp_test; sug_test ;;
+               lsp_test; sug_test; hov_test ;;
     *)         build_native ;;
 esac

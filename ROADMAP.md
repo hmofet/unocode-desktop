@@ -736,7 +736,33 @@ superseded requests are not cancelled with `$/cancelRequest` - the reply is
 dropped instead, which costs the server work nobody wanted.
 
 ### UCD-25: hover
-**Status:** open · **Size:** S · **Depends:** UCD-22
+**Status:** done (a dwell-triggered popup over the pointer, Ctrl+K Ctrl+I at
+the caret, with the server's markdown stripped to readable text) · **Size:** S ·
+**Depends:** UCD-22
+
+Sized S and it was, but three details decide whether a hover is liked or turned
+off:
+
+- **A dwell, not a move.** Asking on every mouse-move event puts a request on
+  the wire for every pixel the pointer crosses and shows a box the instant it
+  passes over a name on its way somewhere else. The pointer has to stop for
+  450 ms over the same word, and the word has to be a word - hovering a comma
+  asks a question with no answer, and a resting pointer would otherwise be a
+  request per idle second.
+- **Nothing to say is not a box saying nothing.** clangd answers with an empty
+  hover for whitespace and punctuation, which is most of where a pointer rests.
+  An empty result shows nothing at all.
+- **The content arrives as markdown**, with fenced code blocks inside it.
+  It is stripped rather than rendered: a monospace popup showing ```` ```cpp ````
+  on its own line is worse than plain text, and a markdown renderer is not this
+  task.
+
+Drawn over the whole workbench rather than inside the editor rect, so a hover
+near a split editor's edge is not cut in half by a rect it has no reason to
+respect. The gate runs the same file twice, once with `--hover` and once
+without, and asserts that the pixels that differ form one contiguous box: every
+other assertion reads a flag and a string, and a popup whose painter had been
+clipped out of existence would satisfy all of them.
 
 ### UCD-26: go to definition, and find all references
 **Status:** open · **Size:** M · **Depends:** UCD-22

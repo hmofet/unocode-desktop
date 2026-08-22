@@ -99,6 +99,10 @@ extern const char *uc_suggest_label(int i);
 extern const char *uc_suggest_detail(int i);
 extern const char *uc_suggest_insert(int i);
 extern int         uc_suggest_kind_at(int i);
+extern void        uc_hover_at(void *d, int off, int px, int py);
+extern int         uc_hover_active(void);
+extern const char *uc_hover_text(void);
+extern int         uc_doc_caret(void *d);
 
 /* re-derive the editor's font metrics after a UI-scale change (uc_edit.c) */
 extern void uc_metrics_init(void);
@@ -121,6 +125,9 @@ static int         g_lsp_ms;
  * UI whose correctness a screenshot cannot show - the question is what is IN
  * the list and in what order, not whether a box appeared. */
 static int         g_suggest;
+/* --hover: ask the server about the symbol at the caret and print the answer.
+ * At the CARET, not at the pointer: a headless run has no pointer to rest. */
+static int         g_hover;
 static float       g_wheel_acc;    /* sub-notch trackpad scroll, UCD-10     */
 static HostGeom    G;              /* window geometry + last session        */
 static const char *g_workdir = ".";
@@ -587,6 +594,18 @@ static int shot_mode(const char *out)
         lsp_settle(g_lsp_ms ? g_lsp_ms : 2000);
         suggest_report();
     }
+    if (g_hover) {
+        void *d = uc_doc_active();
+        if (d) uc_hover_at(d, uc_doc_caret(d), 400, 200);
+        lsp_settle(g_lsp_ms ? g_lsp_ms : 2000);
+        printf("hov: %s\n", uc_hover_active() ? "shown" : "nothing");
+        if (uc_hover_active()) {
+            const char *t = uc_hover_text();
+            printf("hov| ");
+            for (; *t; t++) { putchar(*t == '\n' ? '\n' : *t); if (*t == '\n') printf("hov| "); }
+            printf("\n");
+        }
+    }
     if (g_lsp_ms) { lsp_settle(g_lsp_ms); lsp_report(); }
     for (i = 0; i < 5; i++) { APP->frame(); UI.ticks++; }
     render_frame();
@@ -615,6 +634,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--save")) g_do_save = 1;
         else if (!strcmp(argv[i], "--lsp") && i + 1 < argc) g_lsp_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--suggest")) g_suggest = 1;
+        else if (!strcmp(argv[i], "--hover")) g_hover = 1;
         else workdir = argv[i];
     }
 
