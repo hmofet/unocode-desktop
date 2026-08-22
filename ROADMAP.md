@@ -7,7 +7,7 @@ today; a task near the bottom is one they would miss in their second month.
 Each task is sized to **one agent session**. If a task turns out to need more,
 split it and say so here rather than growing it.
 
-## Where things stand (2026-08-21)
+## Where things stand (2026-08-22)
 
 **Tier 0 is finished.** UCD-01 through UCD-10 are done; UnoCode Desktop is a
 daily driver on Windows, Linux and macOS. What exists:
@@ -21,11 +21,13 @@ daily driver on Windows, Linux and macOS. What exists:
 - The editor is [benchmarked](BENCHMARK.md) against VS Code and wins on startup,
   memory, process count and disk by large multiples.
 
-**Tier A and Tier 1 are COMPLETE (UCD-44..51, UCD-11..20, 2026-08-21).
-Tier 2 is in progress: UCD-21 is done, so `async`/`await` and real Promises
-work everywhere - which is what UCD-22's LSP client needs somewhere to land
-its responses. Start with UCD-22.** The
-assistant is what the product is going to be shown doing, and every layer of
+**Tier A, Tier 1 and Tier 2 are COMPLETE** (UCD-44..51 and UCD-11..20 on
+2026-08-21; UCD-21..28 on 2026-08-22). The editor has real Promises and
+`await`, a language-server client with diagnostics, completions, hover,
+go-to-definition, rename and format, and it loads Microsoft's own TypeScript
+and C++ grammars. **Start with UCD-29**, the first of Tier 3.
+
+The assistant is what the product is going to be shown doing, and every layer of
 it now exists: the editor lives here (44), the network seam (45), the HTTP +
 SSE client (46), nothing blocking the frame (47), a key that is not in a
 settings file (48), the streaming chat view with proposed-edit diffs (49),
@@ -116,7 +118,10 @@ and the two-repo dance an `[UPSTREAM]` task needs.
   **Since UCD-44 this is a much smaller set**: the editor itself is `core/` and
   ours, so only unoui, unojs and fb changes are `[UPSTREAM]` now.
 - **Done means the gate is green**: `./build.sh --gate` still renders a
-  workbench, and whatever check the task names below passes too.
+  workbench, and whatever check the task names below passes too. Since Tier 2
+  the gate also runs `--lsp`, which drives the running editor headlessly and
+  reads what it printed - the language-server suites skip loudly without
+  clangd, the grammar suite never skips.
 
 Status values: `open`, `claimed (<who>, <date>)`, `done (<commit>)`.
 
@@ -608,10 +613,34 @@ bar, and preserve on save.
 
 ---
 
-# Tier 2: code intelligence
+# Tier 2: code intelligence - **complete**
 
 This is the largest single block of what people mean by "VS Code", and it is
 mostly one dependency chain. UCD-21 is the foundation for all of it.
+
+**UCD-21 through UCD-28 are done.** The editor has real Promises and `await`, a
+language-server client that survives its servers dying, diagnostics,
+completions, hover, go-to-definition with a navigation history, rename, format
+and format-on-save, and it loads Microsoft's own TypeScript and C++ grammars.
+
+Three things worth carrying into Tier 3, because each cost more than the task
+that surfaced it and none was in any description:
+
+- **A silent degradation is worse than a refusal**, and this tier was full of
+  them. A regex that would not compile dropped its grammar rule without a word;
+  a construct the parser did not know had its body eaten and compiled to
+  something else; a language server that died took the editor with it via
+  SIGPIPE and exited 141 with no output. Every one looked like "the feature is
+  just not very good" from outside.
+- **Test the content, not the picture.** Almost nothing in this tier can be
+  seen in a screenshot: which completion, at which column, in whose order;
+  which scope, given the twelve lines above it; whether the edits were applied
+  last-first. `build.sh --lsp` drives the running editor and reads what it
+  printed, and one of its checks is a *cost* rather than a behaviour, because
+  the only regression that mattered in UCD-28 produced byte-identical output.
+- **Numbers, where a number exists.** "Real grammars mis-colour" was the
+  description for a year; "36.7% of TypeScript's rules were being discarded"
+  is the same fact and it decides what to do about it.
 
 ### UCD-21: real Promises and an event loop in unojs `[UPSTREAM]`
 **Status:** done (microtask queue + `await` as a real coroutine suspension;
@@ -837,13 +866,61 @@ had to edit the real `SETTINGS.JSN` to exercise a setting would damage the
 machine it runs on, and would leave that machine configured differently
 depending on whether it passed.
 
-### UCD-28: `[UPSTREAM]` TextMate fidelity
-**Status:** open · **Size:** L
+### UCD-28: TextMate fidelity
+**Status:** done (TypeScript 36.7% → 99.8% of patterns compile, C++ 32.3% →
+100%; cross-line state is a stack) · **Size:** L
+
+The `[UPSTREAM]` tag on this task was stale and has been removed. It was
+written before UCD-44 moved the editor into `core/`; the two files this touches,
+`uc_rx.c` and `uc_lang.c`, are both ours now, and the rule above says only
+unoui, unojs and fb changes are upstream any more.
 
 The regex engine rejects lookaround and backreferences, and cross-line state is
 one open rule rather than a stack, so real published grammars (TypeScript, C++)
 either fail to load or mis-colour. Until this lands, "any VS Code grammar works"
 is true only of simple ones.
+
+**The description named the wrong two things.** Measured over Microsoft's own
+grammars, lookaround is in 49% of TypeScript's patterns and 48% of C++'s;
+backreferences are in under 1% of either. And a rule whose regex will not
+compile is *silently dropped* - `uc_lang.c` leaves the slot inert - so "fails
+to load" understated it: **TypeScript loaded as 36.7% of itself and C++ as
+32.3%**, with no diagnostic anywhere. `tools/rx_grammar.c` is the measurement,
+and it is not in the gate because it needs a published grammar file and
+shipping 200 KB of somebody else's JSON to test our regex engine is a licensing
+question answered for the wrong reason.
+
+What actually got the number to 99.8% and 100%:
+
+| what | why it mattered |
+|---|---|
+| lookaround, all four forms | 49% / 48% of patterns |
+| `(?x)` extended mode | 42 TypeScript patterns; see below |
+| class and instruction caps | one 8 KB machine-written pattern needs **571** character classes |
+| `(?>...)` atomic groups | were having their bodies eaten |
+| possessive `*+` `++` | the `+` became a literal |
+| POSIX `[[:alpha:]]`, `\h`, `\G`, named groups, backreferences | the tail |
+
+**Three of those were silent wrongness, not refusal, and that is worse.** A
+refused pattern leaves its rule inert and the text uncoloured; a pattern that
+compiles to something else colours it *wrongly*, or matches nothing while
+looking like it should. `(?>abc)d` compiled to `d`. `\s*+x` demanded a literal
+`+`. `(?i)` compiled a group containing the letter `i`. Each was found by
+running real grammars through the engine and reading what came back, not by
+reading the code.
+
+**The stack.** `scan()` threw away the recursive call's result on one line and
+recorded only its own level, so a rule left open inside another was forgotten
+at the line break: the next line resumed one level too shallow, and closing the
+inner rule dropped straight to the top instead of back into the outer one. The
+state is still one `unsigned short` per line - each distinct nesting is
+**interned** to an id, so a document pays for the nestings that actually occur
+rather than for a stack per line. Carrying the close position back also removed
+a duplicated end-regex execution per closed block per line.
+
+Two rules that shipped in `uc_lang.c` from the beginning and had **never once
+fired** - HTML attribute names and CSS selectors, both `(?=`-based - now work,
+and are the gate's cheapest proof that the regex work reaches real colouring.
 
 ---
 

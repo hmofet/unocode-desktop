@@ -6,7 +6,8 @@
 #
 #   ./build.sh              native build           -> build/unocode
 #   ./build.sh --gate       core tests + native build + the headless render gate
-#   ./build.sh --lsp        just the language-server test (needs clangd)
+#   ./build.sh --lsp        the language-server and grammar tests
+#                           (the language-server half needs clangd)
 #   ./build.sh --windows    mingw cross build      -> build/win/unocode.exe
 #                           (SDL2_MINGW points at an extracted SDL2-devel-
 #                            x.y.z-mingw tree; default /work/unodesk/SDL2-2.30.9)
@@ -732,14 +733,145 @@ print("lsp: clangd renamed a symbol across 3 files, formatted a mangled one "
 EOF
 }
 
+
+# ---- TextMate fidelity (UCD-28) ---------------------------------------------
+# Two claims, and neither can be seen in a screenshot: what SCOPE each character
+# got, and whether it got it because of state carried from an earlier line.
+#
+# Needs no language server, so unlike the rest of the LSP block it never skips.
+gram_test() {
+    rm -rf build/gram_ws && mkdir -p build/gram_ws
+    # An outer begin/end rule with an inner one nested inside it. The whole
+    # point is line 3: the inner rule opened on line 2 and closes on line 3,
+    # and what follows the close must fall back into the OUTER rule.
+    cat > build/gram_ws/NEST.JSN <<'JEOF'
+{
+  "scopeName": "source.nest",
+  "patterns": [
+    { "begin": "<<", "end": ">>", "name": "meta.outer",
+      "patterns": [
+        { "begin": "\\{", "end": "\\}", "name": "meta.inner" }
+      ] }
+  ]
+}
+JEOF
+    printf 'a << b\nc { d\ne } f\ng >> h\n' > build/gram_ws/T.C
+    printf '<a href="y">t</a>\n'            > build/gram_ws/P.HTML
+    printf '.cls { color: red; }\n'         > build/gram_ws/S.CSS
+    ( cd build/gram_ws && ../../build/unocode --shot ../gram.ppm \
+        --open T.C --grammar c=NEST.JSN --scopes . ) > build/gram.log 2>&1 || true
+    ( cd build/gram_ws && ../../build/unocode --shot ../gram2.ppm \
+        --open P.HTML --scopes . ) > build/gram2.log 2>&1 || true
+    ( cd build/gram_ws && ../../build/unocode --shot ../gram3.ppm \
+        --open S.CSS --scopes . ) > build/gram3.log 2>&1 || true
+    # --- the COST of colouring, as a count rather than a clock --------------
+    # A grammar with many rules over a file with long lines. Without a per-line
+    # match cache, scan() asks every rule where it matches at every position it
+    # advances to, so the work is rules x positions; with one, each rule runs
+    # about once per line. The difference on a real grammar was a millisecond a
+    # line versus twenty-five, and it is invisible to every other assertion
+    # here - the scopes come out identical either way.
+    $PY - build/gram_ws/MANY.JSN <<'EOF'
+import io, json, sys
+rules = [{"match": "\\bw%03d\\b" % i, "name": "keyword.w%03d" % i}
+         for i in range(60)]
+io.open(sys.argv[1], "w", encoding="utf-8").write(
+    json.dumps({"scopeName": "source.many", "patterns": rules}))
+EOF
+    $PY - build/gram_ws/MANY.C <<'EOF'
+import io, sys
+# 40 lines of 20 words each: enough positions per line that a missing cache
+# shows up as a multiple, not as noise
+line = " ".join("w%03d" % (i % 60) for i in range(20))
+io.open(sys.argv[1], "w", encoding="utf-8").write((line + "\n") * 40)
+EOF
+    ( cd build/gram_ws && ../../build/unocode --shot ../gram4.ppm \
+        --open MANY.C --grammar c=MANY.JSN --scopes . ) \
+        > build/gram4.log 2>&1 || true
+    $PY - build/gram.log build/gram2.log build/gram3.log build/gram4.log <<'EOF'
+import sys
+
+def runs(path, line):
+    """the scope runs the editor reported for one 1-based line"""
+    want = 'scp# %d ' % line
+    for l in open(path, encoding='utf-8', errors='replace').read().split('\n'):
+        if l.startswith(want):
+            return l[len(want):].strip()
+    return None
+
+nest, html, css = sys.argv[1], sys.argv[2], sys.argv[3]
+assert 'gram: c <- NEST.JSN: loaded' in open(nest, encoding='utf-8').read(), \
+    "the test grammar did not load at all"
+
+# --- the cross-line STACK ------------------------------------------------
+# Line 2 opens the inner rule while the outer one is still open.
+l2 = runs(nest, 2)
+assert l2 == '0-1:meta.outer  2-4:meta.inner', \
+    "line 2 (inner opening inside outer): %r" % l2
+# Line 3 is the whole test. The inner rule closes and what follows must be
+# the OUTER rule again. With a single-rule state the editor forgets the inner
+# rule at the line break and reports `0-4:meta.outer` - the `}` closes
+# nothing and the nesting is gone.
+l3 = runs(nest, 3)
+assert l3 == '0-2:meta.inner  3-4:meta.outer', (
+    "line 3: %r\n"
+    "  wanted the inner rule to still be open, to close at the '}', and the\n"
+    "  rest of the line to fall back into the outer rule.\n"
+    "  '0-4:meta.outer' is the pre-UCD-28 answer: the inner rule was dropped\n"
+    "  at the line break because only one open rule could be carried." % l3)
+# and the outer rule closes normally on line 4
+l4 = runs(nest, 4)
+assert l4 == '0-3:meta.outer  4-5:-', "line 4 (outer closing): %r" % l4
+
+# --- lookahead, through the BUILT-IN grammars -----------------------------
+# These two rules have been in uc_lang.c since the start and have never once
+# fired: both use `(?=`, so uc_rx_compile refused them and uc_lang.c left the
+# slot inert. They are the cheapest possible proof that the regex work
+# reaches real colouring.
+h1 = runs(html, 1)
+assert h1 and 'entity.other.attribute-name.html' in h1, (
+    "the HTML attribute-name rule still does not fire. Its pattern is\n"
+    "  \\b[A-Za-z-]+(?=\\s*=)\n"
+    "and a rule whose regex will not compile is silently dropped.\n  got: %r" % h1)
+c1 = runs(css, 1)
+assert c1 and c1.startswith('0-3:entity.name.tag.css'), (
+    "the CSS selector rule still does not fire (pattern uses (?=[^:]*\\{)).\n"
+    "  got: %r" % c1)
+
+# --- and the cost, which nothing else here would notice -------------------
+many = open(sys.argv[4], encoding='utf-8', errors='replace').read()
+cost = [l for l in many.split('\n') if l.startswith('scp= ')]
+assert cost, "the scope report did not print an execution count: %s" % many[-300:]
+execs, lines = int(cost[0].split()[1]), int(cost[0].split()[5])
+assert lines >= 40, "the cost fixture did not have its lines: %r" % cost[0]
+per = execs / float(lines)
+# 60 rules, 20 words a line. With a per-line match cache each rule runs about
+# once per line plus once per match consumed, so a few hundred. Without one it
+# is rules x positions - thousands - and the ceiling below is generous enough
+# that only a real regression can cross it.
+assert per < 60 * 4, (
+    "%.0f regex executions per line for a 60-rule grammar.\n"
+    "  That is the shape of the bug the per-line match cache exists to stop:\n"
+    "  every rule asked where it matches at every position, rather than once\n"
+    "  and then remembered. It costs nothing that any scope assertion or any\n"
+    "  screenshot can see, and it took Microsoft's TypeScript grammar from\n"
+    "  1.3 seconds to 32 for the same file." % per)
+
+print("gram: nested begin/end survives a line break, and two built-in rules "
+      "that had never fired (HTML attributes, CSS selectors) now do, at "
+      "%.0f regex executions a line" % per)
+EOF
+}
+
 case "${1:-}" in
     --windows) build_windows ;;
     --test)    core_test; utf8_test; fs_test; clip_test; dialog_test
                secret_test ;;
     --lsp)     build_native; lsp_test; sug_test; hov_test; nav_test
-               edit_test ;;
+               edit_test; gram_test ;;
     --gate)    core_test; build_native; utf8_test; fs_test; clip_test
                dialog_test; secret_test; net_test; http_test; gate; utf8_gate
-               lsp_test; sug_test; hov_test; nav_test; edit_test ;;
+               lsp_test; sug_test; hov_test; nav_test; edit_test
+               gram_test ;;
     *)         build_native ;;
 esac

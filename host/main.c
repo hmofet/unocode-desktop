@@ -127,6 +127,13 @@ extern void        uc_rename_symbol(void *d);
 extern void        uc_format_document(void *d);
 extern int         uc_save_with_format(void *d);
 extern void        uc_cfg_override(const char *key, const char *val);
+extern int         uc_lang_by_id(const char *id);
+extern int         uc_lang_load_grammar(int lang, int vol, const char *path);
+extern int         uc_line_count(void *d);
+extern int         uc_line_scopes(void *d, int line, short *out, int cap);
+extern const char *uc_scope_name(int id);
+extern int         uc_ws_vol(void);
+extern unsigned long uc_hl_rx_calls(void);
 extern int         uc_quick_key(int key, int mods, int ch);
 extern int         uc_doc_title(void *d, char *out, int cap);
 extern int         uc_line_of(void *d, int off);
@@ -165,6 +172,13 @@ static int         g_def, g_refs;
  * count is satisfied by edits applied in the wrong order. */
 static const char *g_rename;
 static int         g_format;
+/* --grammar <langid>=<file> loads a TextMate grammar over a built-in language,
+ * and --scopes prints the scope of every character of every line.  Together
+ * they are the only way to ask the tokenizer the question that matters - "what
+ * is this character, given the twelve lines above it" - because the answer
+ * depends on the document's cached cross-line state, not on one line. */
+static const char *g_grammar;
+static int         g_scopes;
 /* --set key=jsonvalue, repeatable: override a setting for this run only, so a
  * test can exercise one without editing the user's real SETTINGS.JSN. */
 static const char *g_set[8];
@@ -644,11 +658,68 @@ static void apply_overrides(void)
     }
 }
 
+/* --grammar <langid>=<path> */
+static void load_grammar(void)
+{
+    const char *eq = g_grammar ? strchr(g_grammar, '=') : 0;
+    char id[24];
+    int n, lang;
+    if (!eq) { printf("gram: expected <langid>=<file>\n"); return; }
+    n = (int)(eq - g_grammar);
+    if (n <= 0 || n >= (int)sizeof id) { printf("gram: bad language id\n"); return; }
+    memcpy(id, g_grammar, (unsigned long)n);
+    id[n] = 0;
+    lang = uc_lang_by_id(id);
+    if (lang < 0) { printf("gram: no language %s\n", id); return; }
+    printf("gram: %s <- %s: %s\n", id, eq + 1,
+           uc_lang_load_grammar(lang, uc_ws_vol(), eq + 1) ? "loaded" : "FAILED");
+    {   /* what the loader wrote into the Log channel: the counters that say
+         * how much of the grammar actually survived */
+        int ch = uc_output_channel("Log");
+        int n = uc_output_lines(ch), j;
+        for (j = 0; j < n; j++) {
+            const char *l = uc_output_line(ch, j);
+            if (l[0]) printf("gram| %s\n", l);
+        }
+    }
+}
+
+/* Every line's colouring, as runs.  Runs rather than per character because the
+ * claim under test is "this stretch is inside the outer rule", and a per
+ * character dump makes that claim unreadable. */
+static void scopes_report(void)
+{
+    void *d = uc_doc_active();
+    short sc[2048];        /* UC_HL_MAXLINE, which this host may not include */
+    int line, n = d ? uc_line_count(d) : 0;
+    unsigned long rx0 = uc_hl_rx_calls();
+    printf("scp: %d line(s)\n", n);
+    for (line = 0; line < n; line++) {
+        int len = uc_line_scopes(d, line, sc, 2048);
+        int i = 0;
+        printf("scp# %d", line + 1);
+        while (i < len) {
+            int j = i;
+            while (j < len && sc[j] == sc[i]) j++;
+            printf("  %d-%d:%s", i, j - 1,
+                   sc[i] ? uc_scope_name(sc[i]) : "-");
+            i = j;
+        }
+        printf("\n");
+    }
+    /* The COST, as a count rather than a clock.  A missing match cache took a
+     * real grammar from a millisecond a line to twenty-five, and every scope
+     * assertion and every screenshot was identical either way. */
+    printf("scp= %lu regex executions for %d line(s)\n",
+           uc_hl_rx_calls() - rx0, n);
+}
+
 static int shot_mode(const char *out)
 {
     int i;
     boot_app();
     apply_overrides();
+    if (g_grammar) load_grammar();
     /* Lay the workbench out BEFORE typing into it.  uc_edit_reveal() scrolls
      * the caret into view against the editor's rect, and until something has
      * painted, that rect is empty - so it computes "one column fits" and
@@ -737,6 +808,7 @@ static int shot_mode(const char *out)
             printf("fmt: %d file(s) edited, %d unsaved\n", edited, left);
         }
     }
+    if (g_scopes) scopes_report();
     if (g_lsp_ms) { lsp_settle(g_lsp_ms); lsp_report(); }
     for (i = 0; i < 5; i++) { APP->frame(); UI.ticks++; }
     render_frame();
@@ -770,6 +842,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--refs")) g_refs = 1;
         else if (!strcmp(argv[i], "--rename") && i + 1 < argc) g_rename = argv[++i];
         else if (!strcmp(argv[i], "--format")) g_format = 1;
+        else if (!strcmp(argv[i], "--grammar") && i + 1 < argc) g_grammar = argv[++i];
+        else if (!strcmp(argv[i], "--scopes")) g_scopes = 1;
         else if (!strcmp(argv[i], "--set") && i + 1 < argc) {
             if (g_nset < 8) g_set[g_nset++] = argv[++i];
             else i++;
