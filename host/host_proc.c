@@ -81,7 +81,7 @@ static void probe_conpty(void)
 }
 
 struct uc_proc {
-    HANDLE in_w, out_r;          /* our ends                                */
+    HANDLE in_w, out_r, err_r;   /* our ends; err_r only in pipe mode       */
     HANDLE proc;
     UC_HPCON pcon;               /* 0 when running on plain pipes           */
     PROCESS_INFORMATION pi;
@@ -199,6 +199,75 @@ int uc_proc_read(uc_proc *p, char *buf, int cap)
     return 0;
 }
 
+/* A child on PIPES rather than a console (UCD-22): no ConPTY, three separate
+ * handles, and the command run through cmd.exe so a PATH lookup still works. */
+uc_proc *uc_proc_spawn_pipes(const char *cmdline, const char *cwd)
+{
+    uc_proc *p;
+    HANDLE in_r = 0, in_w = 0, out_r = 0, out_w = 0, err_r = 0, err_w = 0;
+    SECURITY_ATTRIBUTES sa;
+    STARTUPINFOA si;
+    char cmd[2048];
+
+    g_err[0] = 0;
+    p = (uc_proc *)calloc(1, sizeof *p);
+    if (!p) { snprintf(g_err, sizeof g_err, "out of memory"); return 0; }
+    memset(&sa, 0, sizeof sa);
+    sa.nLength = sizeof sa;
+    sa.bInheritHandle = TRUE;
+    if (!CreatePipe(&in_r, &in_w, &sa, 0) ||
+        !CreatePipe(&out_r, &out_w, &sa, 0) ||
+        !CreatePipe(&err_r, &err_w, &sa, 0)) {
+        snprintf(g_err, sizeof g_err, "could not create the pipes");
+        goto fail;
+    }
+    SetHandleInformation(in_w, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
+
+    snprintf(cmd, sizeof cmd, "cmd.exe /c %s", cmdline ? cmdline : "");
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = in_r;
+    si.hStdOutput = out_w;
+    si.hStdError = err_w;
+    if (!CreateProcessA(0, cmd, 0, 0, TRUE, CREATE_NO_WINDOW, 0, cwd, &si, &p->pi)) {
+        snprintf(g_err, sizeof g_err, "could not start '%s' (error %lu)",
+                 cmdline ? cmdline : "", (unsigned long)GetLastError());
+        goto fail;
+    }
+    CloseHandle(in_r);
+    CloseHandle(out_w);
+    CloseHandle(err_w);
+    p->in_w = in_w;
+    p->out_r = out_r;
+    p->err_r = err_r;
+    p->proc = p->pi.hProcess;
+    return p;
+
+fail:
+    if (in_r) CloseHandle(in_r);
+    if (in_w) CloseHandle(in_w);
+    if (out_r) CloseHandle(out_r);
+    if (out_w) CloseHandle(out_w);
+    if (err_r) CloseHandle(err_r);
+    if (err_w) CloseHandle(err_w);
+    free(p);
+    return 0;
+}
+
+int uc_proc_read_err(uc_proc *p, char *buf, int cap)
+{
+    DWORD avail = 0, got = 0;
+    if (!p || !p->err_r || cap <= 0) return -1;
+    if (PeekNamedPipe(p->err_r, 0, 0, 0, &avail, 0) && avail) {
+        if ((int)avail > cap) avail = (DWORD)cap;
+        if (ReadFile(p->err_r, buf, avail, &got, 0) && got) return (int)got;
+    }
+    return 0;
+}
+
 int uc_proc_write(uc_proc *p, const char *s, int n)
 {
     DWORD put = 0;
@@ -245,6 +314,7 @@ void uc_proc_free(uc_proc *p)
     if (p->pcon && p_ClosePseudoConsole) p_ClosePseudoConsole(p->pcon);
     if (p->in_w) CloseHandle(p->in_w);
     if (p->out_r) CloseHandle(p->out_r);
+    if (p->err_r) CloseHandle(p->err_r);
     if (p->pi.hThread) CloseHandle(p->pi.hThread);
     if (p->pi.hProcess) CloseHandle(p->pi.hProcess);
     free(p);
@@ -267,8 +337,35 @@ void uc_proc_free(uc_proc *p)
 #  include <pty.h>
 #endif
 
+static void child_exec(const char *cmdline, const char *cwd);
+
+/* WRITING TO A DEAD CHILD MUST NOT KILL THE EDITOR.  A pipe whose reader has
+ * exited raises SIGPIPE on write, and SIGPIPE's default disposition is to
+ * terminate the process - so a language server that crashed took the whole
+ * editor down with it the moment the client tried to send it anything.  The
+ * symptom was an exit status of 141 and not one line of output, which reads
+ * like a crash in the editor rather than a signal from a child.
+ *
+ * Ignoring it turns the write into a plain EPIPE return, which uc_proc_read()
+ * already reports as "the child ended".  It is safe to ignore process-wide
+ * because child_exec() puts SIGPIPE back to SIG_DFL before every exec - an
+ * ignored disposition survives exec, and a child that inherited this one would
+ * keep running after its own downstream went away. */
+static void ignore_sigpipe(void)
+{
+    static int done;
+    struct sigaction sa;
+    if (done) return;
+    done = 1;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = SIG_IGN;
+    sigaction(SIGPIPE, &sa, 0);
+}
+
 struct uc_proc {
-    int fd;                       /* the pty master                         */
+    int fd;                       /* the pty master, or stdout's pipe       */
+    int fd_in;                    /* pipe mode: stdin; -1 when on a pty     */
+    int fd_err;                   /* pipe mode: stderr; -1 on a pty         */
     int pid;
     int exited, code;
 };
@@ -301,42 +398,101 @@ uc_proc *uc_proc_spawn(const char *cmdline, const char *cwd)
     }
     if (pid == 0) {
         /* the child.  Nothing here may return: an exec that failed has to
-         * _exit, or a second copy of the editor keeps running on this pty. */
-        const char *sh = uc_proc_shell_name();
-        /* RESET THE SIGNALS FIRST.  An IGNORED disposition survives exec, and
-         * the editor may well be ignoring SIGINT without knowing it - a
-         * process started in the background by a non-interactive shell has
-         * SIGINT and SIGQUIT set to SIG_IGN, and hands that to everything it
-         * spawns.  The symptom is a child that cannot be interrupted by
-         * anything: not Ctrl+C, not a signal sent by hand, because the child
-         * is ignoring the signal rather than missing it.  Every terminal
-         * emulator does this; ours has to as well. */
-        {
-            struct sigaction sa;
-            sigset_t none;
-            memset(&sa, 0, sizeof sa);
-            sa.sa_handler = SIG_DFL;
-            sigaction(SIGINT,  &sa, 0);
-            sigaction(SIGQUIT, &sa, 0);
-            sigaction(SIGTERM, &sa, 0);
-            sigaction(SIGHUP,  &sa, 0);
-            sigaction(SIGPIPE, &sa, 0);
-            sigaction(SIGCHLD, &sa, 0);
-            sigemptyset(&none);
-            sigprocmask(SIG_SETMASK, &none, 0);
-        }
-        if (cwd && cwd[0]) { if (chdir(cwd) != 0) { /* start where we are */ } }
+         * _exit, or a second copy of the editor keeps running on this pty.
+         * TERM first, because child_exec() will not come back. */
         setenv("TERM", "xterm-256color", 1);
-        if (cmdline && cmdline[0]) execl(sh, sh, "-c", cmdline, (char *)0);
-        else execl(sh, sh, "-i", (char *)0);
-        _exit(127);
+        child_exec(cmdline, cwd);
     }
     /* the parent.  O_NONBLOCK is the whole reason this can be polled from a
      * frame loop rather than a thread. */
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     p->fd = fd;
+    p->fd_in = -1;                /* a pty is one descriptor both ways      */
+    p->fd_err = -1;
     p->pid = pid;
     return p;
+}
+
+/* Reset the child's signal dispositions and exec.  Shared by both spawns,
+ * because an ignored SIGINT survives exec either way (see uc_proc_spawn). */
+static void child_exec(const char *cmdline, const char *cwd)
+{
+    const char *sh = uc_proc_shell_name();
+    struct sigaction sa;
+    sigset_t none;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = SIG_DFL;
+    sigaction(SIGINT,  &sa, 0);
+    sigaction(SIGQUIT, &sa, 0);
+    sigaction(SIGTERM, &sa, 0);
+    sigaction(SIGHUP,  &sa, 0);
+    sigaction(SIGPIPE, &sa, 0);
+    sigaction(SIGCHLD, &sa, 0);
+    sigemptyset(&none);
+    sigprocmask(SIG_SETMASK, &none, 0);
+    if (cwd && cwd[0]) { if (chdir(cwd) != 0) { /* start where we are */ } }
+    if (cmdline && cmdline[0]) execl(sh, sh, "-c", cmdline, (char *)0);
+    else execl(sh, sh, "-i", (char *)0);
+    _exit(127);
+}
+
+uc_proc *uc_proc_spawn_pipes(const char *cmdline, const char *cwd)
+{
+    uc_proc *p;
+    int in[2], out[2], err[2], pid;
+
+    g_err[0] = 0;
+    ignore_sigpipe();
+    p = (uc_proc *)calloc(1, sizeof *p);
+    if (!p) { snprintf(g_err, sizeof g_err, "out of memory"); return 0; }
+    if (pipe(in) != 0) { free(p); snprintf(g_err, sizeof g_err, "pipe: %s", strerror(errno)); return 0; }
+    if (pipe(out) != 0) { close(in[0]); close(in[1]); free(p);
+                          snprintf(g_err, sizeof g_err, "pipe: %s", strerror(errno)); return 0; }
+    if (pipe(err) != 0) { close(in[0]); close(in[1]); close(out[0]); close(out[1]);
+                          free(p); snprintf(g_err, sizeof g_err, "pipe: %s", strerror(errno)); return 0; }
+    pid = fork();
+    if (pid < 0) {
+        close(in[0]); close(in[1]); close(out[0]); close(out[1]);
+        close(err[0]); close(err[1]);
+        snprintf(g_err, sizeof g_err, "fork: %s", strerror(errno));
+        free(p);
+        return 0;
+    }
+    if (pid == 0) {
+        dup2(in[0], 0);
+        dup2(out[1], 1);
+        dup2(err[1], 2);
+        close(in[0]); close(in[1]); close(out[0]); close(out[1]);
+        close(err[0]); close(err[1]);
+        child_exec(cmdline, cwd);
+    }
+    close(in[0]); close(out[1]); close(err[1]);
+    fcntl(out[0], F_SETFL, fcntl(out[0], F_GETFL, 0) | O_NONBLOCK);
+    fcntl(err[0], F_SETFL, fcntl(err[0], F_GETFL, 0) | O_NONBLOCK);
+    /* stdin is NON-BLOCKING too, and the caller keeps a queue.
+     *
+     * The tempting alternative - leave it blocking so a message always goes out
+     * whole - hands the child a lever on the editor's frame rate: a pipe holds
+     * 64 KB, a full-text sync of a large file is bigger than that, and a server
+     * busy indexing is not reading its stdin.  The editor would stop painting
+     * until it did.  A partial write is only dangerous if the remainder is
+     * dropped, and uc_lsp.c's outgoing queue retries it next tick. */
+    fcntl(in[1], F_SETFL, fcntl(in[1], F_GETFL, 0) | O_NONBLOCK);
+    p->fd = out[0];
+    p->fd_in = in[1];
+    p->fd_err = err[0];
+    p->pid = pid;
+    return p;
+}
+
+int uc_proc_read_err(uc_proc *p, char *buf, int cap)
+{
+    int n;
+    if (!p || p->fd_err < 0 || cap <= 0) return -1;
+    n = (int)read(p->fd_err, buf, (size_t)cap);
+    if (n > 0) return n;
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
+    return -1;
 }
 
 int uc_proc_read(uc_proc *p, char *buf, int cap)
@@ -357,9 +513,10 @@ int uc_proc_read(uc_proc *p, char *buf, int cap)
 
 int uc_proc_write(uc_proc *p, const char *s, int n)
 {
-    int put;
+    int put, fd;
     if (!p || n <= 0) return 0;
-    put = (int)write(p->fd, s, (size_t)n);
+    fd = (p->fd_in >= 0) ? p->fd_in : p->fd;   /* pipes have two ends */
+    put = (int)write(fd, s, (size_t)n);
     return put > 0 ? put : 0;
 }
 
@@ -408,6 +565,8 @@ void uc_proc_free(uc_proc *p)
         { int st; waitpid(p->pid, &st, 0); }
     }
     if (p->fd >= 0) close(p->fd);
+    if (p->fd_in >= 0) close(p->fd_in);
+    if (p->fd_err >= 0) close(p->fd_err);
     free(p);
 }
 

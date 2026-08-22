@@ -26,10 +26,17 @@
  *   unocode --type <text>      headless: feed <text> in as typing first
  *   unocode --keys <LRUDHEBX>  headless: navigation keys, after --type
  *   unocode --save             headless: save the active editor after --type
+ *   unocode --lsp <ms>         headless: run real frames for <ms> before and
+ *                              after the typing, then print what the language
+ *                              -server client did, traffic and all
  *
- * The last two are the gate's hands, as --shot is its eyes: a screenshot can
- * say the workbench painted, but only typing and saving can say that what
- * went in came back out of the file byte for byte.
+ * --type/--keys/--save are the gate's hands, as --shot is its eyes: a
+ * screenshot can say the workbench painted, but only typing and saving can say
+ * that what went in came back out of the file byte for byte.
+ *
+ * --lsp is there because a language server is a CHILD PROCESS, and the five
+ * frames the shot path runs prove nothing about one - it has not finished
+ * starting yet.  The only honest test lets the clock run and then looks.
  * ======================================================================== */
 #include <SDL.h>
 #include <stdio.h>
@@ -66,6 +73,18 @@ extern void uc_open_folder(int vol, const char *dir);
 extern void *uc_doc_active(void);
 extern int   uc_doc_save(void *d);
 
+/* The language-server client's introspection, in the same opaque dialect and
+ * for the same reason: a UcLsp * is only ever handed back to the core. */
+extern int         uc_lsp_count(void);
+extern void       *uc_lsp_at(int i);
+extern int         uc_lsp_state(void *s);
+extern const char *uc_lsp_name(void *s);
+extern int         uc_lsp_restarts(void *s);
+extern int         uc_output_channel(const char *name);
+extern int         uc_output_lines(int ch);
+extern const char *uc_output_line(int ch, int i);
+extern void        uc_lsp_trace_on(void);
+
 /* re-derive the editor's font metrics after a UI-scale change (uc_edit.c) */
 extern void uc_metrics_init(void);
 extern void uno_font_set_ui_scale(int pct);
@@ -76,6 +95,12 @@ static const char *g_open_file;    /* --open, resolved after the app is up */
 static const char *g_type_text;    /* --type, fed in as character events   */
 static const char *g_keys;         /* --keys, navigation keys after --type */
 static int         g_do_save;      /* --save, after --type                 */
+/* --lsp <ms>: run the frame loop for this long before and after the typing,
+ * then print what the language-server client did.  A server is a CHILD PROCESS
+ * that takes a second or two to start and answer, so the five frames the shot
+ * path runs prove nothing about it - the only honest test is to let the clock
+ * run and then look. */
+static int         g_lsp_ms;
 static float       g_wheel_acc;    /* sub-notch trackpad scroll, UCD-10     */
 static HostGeom    G;              /* window geometry + last session        */
 static const char *g_workdir = ".";
@@ -455,6 +480,40 @@ static void press_keys(const char *keys)
 /* headless: boot, run a few frames, snapshot, exit.  The whole editor core
  * renders in software into fb[], so "can it draw the workbench" needs no
  * display server - this is the build gate on a bare CI box. */
+/* Run real frames for real milliseconds.  SDL_Delay rather than a spin so the
+ * server gets the CPU: it is doing the work we are waiting for. */
+static void lsp_settle(int ms)
+{
+    /* The CLOCK, not a count of delays.  Counting 300 x SDL_Delay(10) as three
+     * seconds is wrong by however long the frames took, and on a cold first run
+     * - where clangd is being paged in from disk and is the slowest thing on
+     * the machine - the frames are exactly what gets slow.  That reading a
+     * three-second wait as a sixty-second one, and made the client's own
+     * initialize timeout fire and look like a bug in the client. */
+    unsigned long end = host_ms() + (unsigned long)ms;
+    while (host_ms() < end) {
+        APP->frame();
+        UI.ticks++;
+        SDL_Delay(10);
+    }
+}
+
+static void lsp_report(void)
+{
+    int ch = uc_output_channel("Language Server");
+    int n = uc_output_lines(ch), i;
+    static const char *kState[] = { "off", "starting", "ready", "dead" };
+    printf("lsp: %d server(s)\n", uc_lsp_count());
+    for (i = 0; i < uc_lsp_count(); i++) {
+        void *s = uc_lsp_at(i);
+        int st = uc_lsp_state(s);
+        printf("lsp: [%s] state=%s restarts=%d\n", uc_lsp_name(s),
+               (st >= 0 && st < 4) ? kState[st] : "?", uc_lsp_restarts(s));
+    }
+    printf("lsp: --- %d traffic lines ---\n", n);
+    for (i = 0; i < n; i++) printf("lsp| %s\n", uc_output_line(ch, i));
+}
+
 static int shot_mode(const char *out)
 {
     int i;
@@ -465,12 +524,15 @@ static int shot_mode(const char *out)
      * scrolls the whole typed line off to the left.  A real user types after
      * the window exists; the headless hands have to do the same. */
     render_frame();
+    if (g_lsp_ms) { uc_lsp_trace_on(); lsp_settle(g_lsp_ms); }  /* start, init, didOpen */
     if (g_type_text) { type_text(g_type_text); host_mark_dirty(); }
     if (g_keys)      { press_keys(g_keys);    host_mark_dirty(); }
+    if (g_lsp_ms) lsp_settle(g_lsp_ms);       /* the debounce, then didChange */
     if (g_do_save) {
         void *d = uc_doc_active();
         if (d) uc_doc_save(d);
     }
+    if (g_lsp_ms) { lsp_settle(g_lsp_ms); lsp_report(); }
     for (i = 0; i < 5; i++) { APP->frame(); UI.ticks++; }
     render_frame();
     if (!write_ppm(out)) return 1;
@@ -496,6 +558,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--type") && i + 1 < argc) g_type_text = argv[++i];
         else if (!strcmp(argv[i], "--keys") && i + 1 < argc) g_keys = argv[++i];
         else if (!strcmp(argv[i], "--save")) g_do_save = 1;
+        else if (!strcmp(argv[i], "--lsp") && i + 1 < argc) g_lsp_ms = atoi(argv[++i]);
         else workdir = argv[i];
     }
 

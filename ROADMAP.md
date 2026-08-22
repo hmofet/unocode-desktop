@@ -626,7 +626,9 @@ loop, then `Promise`, `async`/`await` and `Promise.all`.
   and the documented "deliberate deviation #1" is deleted from `UNOCODE.md`.
 
 ### UCD-22: LSP transport and lifecycle
-**Status:** open · **Size:** L · **Depends:** UCD-14, UCD-21
+**Status:** done (clangd and pyright both verified live; full-text sync on a
+quiet timer, and a killed server comes back and re-opens its documents) ·
+**Size:** L · **Depends:** UCD-14, UCD-21
 
 Spawn a language server, frame JSON-RPC over stdio, handle initialize/shutdown,
 map documents to URIs, and send did-open/did-change/did-save. No UI yet: this
@@ -634,6 +636,27 @@ task ends with a server running and a log of real traffic.
 
 - **Done when:** clangd and pyright both start, initialize and stay alive across
   edits, and a crashed server is restarted with a bounded backoff.
+
+Four things this cost that the task description does not hint at, all found by
+running it rather than by reading it:
+
+- **A dead child killed the editor.** Writing to a pipe whose reader has exited
+  raises SIGPIPE, whose default disposition is to terminate. A crashed server
+  took the whole editor with it, exiting 141 with no output - which reads like a
+  crash in the editor, not a signal from a child. `host_proc.c` ignores it now,
+  and `child_exec()` was already putting it back to `SIG_DFL` before every exec,
+  so nothing inherits the ignore.
+- **A `UcDoc *` is not a stable identity.** `uc_doc_close()` shifts every later
+  document down a slot, so a pointer kept across a frame can come to mean a
+  different file. The URI is the identity that survives; pointers are re-derived
+  from it each tick.
+- **A timestamp sampled before the work it times reads as a wrap.** `now` was
+  taken at the top of the tick and the server was started later in the same
+  tick, so `now - started_at` underflowed to 0xFFFF... and every server was
+  declared unresponsive before it had run for a microsecond.
+- **The `pc64/build.sh` source list is explicit** while the desktop globs
+  `core/uc_*.c`, so a new core file builds on the desktop and fails only at the
+  pc64 link.
 
 ### UCD-23: diagnostics
 **Status:** open · **Size:** M · **Depends:** UCD-22

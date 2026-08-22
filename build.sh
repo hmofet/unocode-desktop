@@ -6,6 +6,7 @@
 #
 #   ./build.sh              native build           -> build/unocode
 #   ./build.sh --gate       core tests + native build + the headless render gate
+#   ./build.sh --lsp        just the language-server test (needs clangd)
 #   ./build.sh --windows    mingw cross build      -> build/win/unocode.exe
 #                           (SDL2_MINGW points at an extracted SDL2-devel-
 #                            x.y.z-mingw tree; default /work/unodesk/SDL2-2.30.9)
@@ -261,11 +262,58 @@ print("utf8: Left x3 then Backspace removed ONE whole character (%r)"
 EOF
 }
 
+# ---- the LSP client (UCD-22) ------------------------------------------------
+# Against a REAL server, because a cooperative fake would get right by
+# construction the three things that are actually hard: a frame split across
+# reads, a request the server sends back and blocks on, and a death.  clangd is
+# the one asserted on because it is packaged everywhere; pyright is exercised
+# too when it happens to be installed.
+#
+# SKIPPED, loudly, where no server is present.  A language-server test that
+# passed because it never started one would be worse than not having it.
+lsp_test() {
+    if ! command -v clangd >/dev/null 2>&1; then
+        echo "lsp_test: SKIPPED - no clangd on PATH" >&2
+        return 0
+    fi
+    rm -rf build/lsp_ws && mkdir -p build/lsp_ws
+    printf 'int main(void) { return 0; }
+' > build/lsp_ws/MAIN.C
+    ( cd build/lsp_ws && ../../build/unocode --shot ../lsp.ppm         --open MAIN.C --type 'int q = 1;' --save --lsp 6000 . )         > build/lsp.log 2>&1 || true
+    $PY - build/lsp.log <<'EOF'
+import sys
+log = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+
+def want(needle, why):
+    assert needle in log, "%s (looked for %r)" % (why, needle)
+
+want('state=ready',
+     "clangd never reached ready - it did not start, or never answered initialize")
+want('"method":"initialize"',       "the client never sent initialize")
+want('"result":{"capabilities"',    "clangd never returned its capabilities")
+want('"method":"initialized"',      "the client never confirmed initialization")
+want('"method":"textDocument/didOpen"',   "the open document was never sent")
+want('"method":"textDocument/didChange"', "the edit was never sent")
+want('"method":"textDocument/didSave"',   "the save was never sent")
+# The point of full sync: the change carries the TEXT, and it is the edited
+# text.  A didChange that shipped the pre-edit buffer would satisfy every
+# assertion above and be useless.
+assert 'int q = 1;' in log.split('didChange', 1)[1][:2000],     "didChange did not carry the text that was typed"
+# The server answered about the file, which is the only proof the URI we built
+# is one it could actually open.
+want('publishDiagnostics', "clangd never diagnosed the file - check the URI")
+print("lsp: clangd initialized, opened, and saw an edit (%d traffic lines)"
+      % log.count('lsp| '))
+EOF
+}
+
 case "${1:-}" in
     --windows) build_windows ;;
     --test)    core_test; utf8_test; fs_test; clip_test; dialog_test
                secret_test ;;
+    --lsp)     build_native; lsp_test ;;
     --gate)    core_test; build_native; utf8_test; fs_test; clip_test
-               dialog_test; secret_test; net_test; http_test; gate; utf8_gate ;;
+               dialog_test; secret_test; net_test; http_test; gate; utf8_gate
+               lsp_test ;;
     *)         build_native ;;
 esac
