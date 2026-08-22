@@ -28,8 +28,11 @@ core/           the EDITOR. Canonical here; UnoDOS vendors it. See
   ext/            the sample extensions - the worked example of the manifest
 host/           the SDL2 + OS shim. This is your code.
   main.c          window, event loop, input translation, HiDPI, headless modes
-  host_fs.c       the uno_fs_* seam: volumes, case-insensitive paths, the
-                  long-name alias table (UCD-01)
+  host_fs.c       the uno_fs_* seam: volumes, case-insensitive paths.  The
+                  long-name alias table it used to carry is GONE - UCD-11
+                  widened the seam, which is what it was there to work around
+  host_proc.c     child processes: forkpty / ConPTY (UCD-14)
+  host_secret.c   the secret store: DPAPI / Keychain / a 0600 file (UCD-48)
   host_clip.c     the OS clipboard, mirrored onto the core's (UCD-02)
   host_win.c      title, pointer shapes, window geometry + session (07/08/09)
   host_dialog.c   what happens after the native Open dialog closes (UCD-06)

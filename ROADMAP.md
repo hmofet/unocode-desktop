@@ -21,7 +21,8 @@ daily driver on Windows, Linux and macOS. What exists:
 - The editor is [benchmarked](BENCHMARK.md) against VS Code and wins on startup,
   memory, process count and disk by large multiples.
 
-**Tier A is COMPLETE (UCD-44..51, 2026-08-21). Start with UCD-11.** The
+**Tier A and Tier 1 are COMPLETE (UCD-44..51, UCD-11..20, 2026-08-21).
+Start with Tier 2.** The
 assistant is what the product is going to be shown doing, and every layer of
 it now exists: the editor lives here (44), the network seam (45), the HTTP +
 SSE client (46), nothing blocking the frame (47), a key that is not in a
@@ -497,7 +498,8 @@ the platform can do.
 # Tier 1: the editing features people reach for every hour
 
 ### UCD-11: `[UPSTREAM]` widen the filename seam
-**Status:** open · **Size:** L
+**Status:** done (the seam takes the caller's STRIDE, so the width cannot be
+baked into two headers that disagree; the alias table is gone) · **Size:** L
 
 Replace `char (*names)[16]` in the listing seam with a width the platform picks
 (`UC_NAME_MAX`, 256), so long names stop being an alias trick. Touches
@@ -519,7 +521,9 @@ changes a signature used across the kernel, so it will happen harder. Run
 after.
 
 ### UCD-12: workspace-wide search
-**Status:** open · **Size:** M
+**Status:** done (recursive, ignores node_modules and friends, grouped by
+file, scanned in slices from the frame loop so progress is real and Escape
+cancels) · **Size:** M
 
 Find in the open file exists; find across the folder does not. It is one of the
 top three things anyone does in a codebase.
@@ -532,13 +536,15 @@ a spare side-bar view slot.
   stays responsive (report progress, allow cancel).
 
 ### UCD-13: workspace-wide replace
-**Status:** open · **Size:** M · **Depends:** UCD-12
+**Status:** done (one hit / one file / everywhere; one undo step per file;
+files left open and dirty rather than saved) · **Size:** M · **Depends:** UCD-12
 
 Preview per hit, replace one / all in a file / all everywhere, and a single undo
 step per file.
 
 ### UCD-14: real processes in the terminal
-**Status:** open · **Size:** L
+**Status:** done (forkpty / ConPTY behind core/uc_proc.h; pc64 answers "no
+processes" and keeps its builtins) · **Size:** L
 
 `pc64_shell_run_user` currently refuses honestly. The terminal has builtins but
 cannot run `git status`, a compiler, or a test suite, so the panel is decorative.
@@ -551,13 +557,16 @@ codes. This also unblocks Tier 2 and Tier 3, which both need child processes.
   without blocking the UI, and closing the panel kills the child.
 
 ### UCD-15: tasks run real commands
-**Status:** open · **Size:** S · **Depends:** UCD-14
+**Status:** done (+ a problem matcher: gcc/clang/MSVC diagnostics land in the
+Problems panel with the failing line) · **Size:** S · **Depends:** UCD-14
 
 `TASKS.JSN` is parsed in VS Code's shape already. Route it through UCD-14 and
 surface failures with the failing line.
 
 ### UCD-16: multi-cursor and column selection
-**Status:** open · **Size:** L
+**Status:** done (Ctrl+D ADDS a cursor now rather than moving one; per-caret
+tab stops; paste distributes N lines to N cursors; Alt+Shift box select) ·
+**Size:** L
 
 Alt+click, Ctrl+Alt+Up/Down, and "select next occurrence" (Ctrl+D). Once someone
 has this in their fingers, an editor without it feels broken.
@@ -566,26 +575,30 @@ has this in their fingers, an editor without it feels broken.
   at all cursors, and one undo step reverses the whole multi-edit.
 
 ### UCD-17: go to line, and go to symbol in file
-**Status:** open · **Size:** S
+**Status:** done (Ctrl+Shift+O and the '@' prefix, from the grammar's own
+scopes; a storage.type test keeps call sites out of the list) · **Size:** S
 
 Ctrl+G and Ctrl+Shift+O. The quick-open widget already exists; these are two more
 modes on it, and the symbol list can come from the existing grammar's scopes
 until UCD-22 replaces it with real symbols.
 
 ### UCD-18: split editors
-**Status:** open · **Size:** L
+**Status:** done (two groups, each with its own tabs, active editor AND view -
+so two views of one file scroll independently) · **Size:** L
 
 Side-by-side editing of two files, or two views of one file. Common enough that
 its absence is noticed on day one, expensive enough that it sits below the cheap
 wins.
 
 ### UCD-19: drag and drop files onto the window
-**Status:** open · **Size:** S
+**Status:** done (SDL_DROPFILE, enabled explicitly; shares the picker's
+re-rooting rules) · **Size:** S
 
 `SDL_DROPFILE`. Dropping a file opens it; dropping a folder opens the workspace.
 
 ### UCD-20: auto-detect indentation and line endings
-**Status:** open · **Size:** S
+**Status:** done (detected on load, preserved on save, an explicit user
+setting still wins) · **Size:** S
 
 Opening a tabs file in a spaces editor and saving it rewrites the whole file,
 which shows up as a catastrophic diff. Detect per file, show it in the status

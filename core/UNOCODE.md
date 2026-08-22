@@ -154,6 +154,9 @@ vscode.workspace.fs.readFile(path) / .writeFile(path, text)
 vscode.workspace.fs.readDirectory(path)      // -> [[name, type], ...]; 1 file,
                                              //    2 directory; "" = the root
 vscode.workspace.canRunPrograms              // can this platform launch one?
+                                             // (the terminal's own child
+                                             //  processes are UCD-14 and are
+                                             //  not exposed to extensions)
 vscode.workspace.runUserProgram(path)        // "" = launched; else the reason
                                              // (on pc64, the Python error)
 vscode.workspace.onDidSaveTextDocument(fn)   // also onDidOpen / onDidChange
@@ -411,6 +414,18 @@ typed into a *document*.
   platform's own store, the `AI: Set API Key` / `AI: Clear API Key` commands
   with a masked input box, and the store named on screen whenever a key is
   saved. Keys never enter `SETTINGS.JSN`.
+- **1.3** (2026-08-21) Tier 1. The listing seam takes the caller's STRIDE
+  rather than a baked-in 16 (UCD-11), so names up to `UC_NAME_MAX` (256)
+  cross verbatim and the desktop's FAT-style alias table is gone. Workspace
+  search recurses and runs in slices (UCD-12) and can replace across files
+  with one undo step per file (UCD-13). The terminal runs real child
+  processes through a pty where the platform has one (UCD-14) and tasks use
+  them, with compiler diagnostics matched into the Problems panel (UCD-15).
+  Ctrl+D adds a cursor, paste distributes across cursors, Alt+Shift drags a
+  column selection (UCD-16). Go to Symbol (UCD-17). Split editors, each group
+  with its own view (UCD-18). Files can be dropped on the window (UCD-19).
+  Indentation and line endings are detected per file and preserved on save
+  (UCD-20).
 - **1.2** (2026-08-21) The assistant view (UCD-49): a sixth activity-bar view
   holding a streaming chat, code blocks in the editor's grammars, and edits
   proposed as a diff before they are applied as one undo step. `vscode.lm`
